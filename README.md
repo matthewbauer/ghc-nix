@@ -1,5 +1,7 @@
 # `ghc-nix`
 
+[![demo](https://asciinema.org/a/uXdKz7iOeohpwRAgd14i4VAUp.svg)](https://asciinema.org/a/uXdKz7iOeohpwRAgd14i4VAUp?autoplay=1)
+
 `ghc-nix` is an attempt to augment GHC with the ability to use Nix as a caching
 layer. This has the potential to dramatically speed up "pure Nix" builds by
 being able to re-use build artefacts for files that haven't changed. It also has

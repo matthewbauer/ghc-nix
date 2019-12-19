@@ -4,17 +4,19 @@
 
 module Main ( main ) where
 
-import Digraph
-import Data.Foldable
 import Control.Monad.IO.Class ( liftIO )
-import GHC.Paths ( libdir )
+import Data.Foldable
+import Digraph
+import DynFlags
 import Finder
 import GHC
-import DynFlags
+import GHC.Paths ( libdir )
+import HscTypes
 import System.Environment ( getArgs )
 
 main :: IO ()
-main = runGhc ( Just libdir ) do
+main = print libdir >>
+  runGhc ( Just libdir ) do
   commandLineArguments <-
     liftIO getArgs
 
@@ -27,7 +29,10 @@ main = runGhc ( Just libdir ) do
 
     return ( newDynFlags, leftOver )
 
-  setSessionDynFlags dynFlags
+  installed <-
+    setSessionDynFlags dynFlags
+
+  liftIO ( print ( length installed ) )
 
   setTargets do
     L _ filePath <-
@@ -60,3 +65,21 @@ main = runGhc ( Just libdir ) do
   for_ stronglyConnectedComponents \case
     AcyclicSCC ms@ModSummary{ ms_location = ModLocation{ ml_hs_file }, ms_srcimps } -> do
       liftIO ( print ml_hs_file )
+      liftIO ( print ( map fst ms_srcimps ) )
+ 
+      for_ ( ms_imps ms ) \( package, L _ moduleName ) -> liftIO do
+        findImportedModule hsc_env moduleName package >>= \case
+          Found ModLocation{ ml_hs_file = Just hsFile } _ -> do
+            putStrLn ( moduleNameString moduleName ++ " was found. Compile " ++ hsFile ++ " first" )
+
+          Found _ _ ->
+            putStrLn ( moduleNameString moduleName ++ " was found, but I don't know the .hs file" )
+
+          FoundMultiple options ->
+            putStrLn ( moduleNameString moduleName ++ " has " ++ show ( length options ) ++ " options." )
+
+          NoPackage _ ->
+            putStrLn "NoPackage"
+
+          NotFound{} ->
+            putStrLn ( "I dunno where " ++ moduleNameString moduleName ++ " is" )

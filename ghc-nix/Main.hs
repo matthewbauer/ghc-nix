@@ -126,27 +126,17 @@ main3 files = do
       dependencies <-
         transitiveDependencies dependencyGraph buildResults srcFile
 
-      Just ( Turtle.lineToText -> drv ) <-
-        Turtle.fold
-          ( Turtle.inproc
-              "nix-instantiate"
-              [ fromString hsBuilder
-              , "--arg", "hs-path", fromString srcFile
-              , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
-              , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
-              , "--no-build-output"
-              , "--quiet"
-              ]
-              empty
-          )
-          Control.Foldl.head
+      putStrLn ( "Checking " <> srcFile )
 
       buildResult <- tryAny do
         Just ( Turtle.lineToText -> out ) <-
           Turtle.fold
             ( Turtle.inproc
-                "nix-store"
-                [ "-r", drv
+                "nix-build"
+                [ fromString hsBuilder
+                , "--arg", "hs-path", fromString srcFile
+                , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
+                , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
                 ]
                 empty
             )
@@ -156,9 +146,7 @@ main3 files = do
 
       case buildResult of
         Left _ -> do
-          putStrLn ( "Build for " ++ srcFile ++ " failed:" )
-
-          Turtle.proc "nix" [ "log", drv ] empty
+          putStrLn ( "Build for " ++ srcFile ++ " failed" )
 
           fail "TODO"
 

@@ -13,6 +13,7 @@ import Control.Concurrent.Async
 import Control.Concurrent.MVar
 import Control.Exception.Safe ( tryAny )
 import qualified Control.Foldl
+import Control.Monad ( void )
 import Control.Monad.IO.Class ( liftIO )
 import qualified Data.Aeson as JSON
 import Data.Foldable
@@ -31,16 +32,51 @@ import GHC
 import GHC.Paths ( libdir )
 import HscTypes
 import System.Environment ( getArgs )
-import System.FilePath ( takeFileName )
+import System.FilePath ( takeExtension, takeFileName )
 import qualified Turtle
 
 main :: IO ()
-main = runGhc ( Just libdir ) do
-  hsBuilder <-
-    liftIO ( getDataFileName "compile-hs.nix" )
+main = do
+  commandLineArguments <-
+    getArgs
 
+  case commandLineArguments of
+    "--numeric-version" : _ ->
+      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+
+    "--supported-languages" : _ ->
+      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+
+    "--info" : _ ->
+      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+
+    "--print-global-package-db" : _ ->
+      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+
+    "--print-libdir" : _ ->
+      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+
+    _ ->
+      main2
+
+
+main2 :: IO ()
+main2 = runGhc ( Just libdir ) do
   files <-
     interpretCommandLine
+
+  commandLineArguments <-
+    liftIO getArgs
+
+  if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
+    then void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+    else main3 ( filter ( `notElem` [ "--make" ] ) files )
+
+
+main3 :: [ FilePath ] -> Ghc ()
+main3 files = do
+  hsBuilder <-
+    liftIO ( getDataFileName "compile-hs.nix" )
 
   targets <-
     traverse ( \filePath -> guessTarget filePath Nothing ) files
@@ -82,7 +118,7 @@ main = runGhc ( Just libdir ) do
 
           return ( Map.singleton srcFile ( concat dependencies ) )
 
-  liftIO do
+  outputs <- liftIO do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
@@ -160,6 +196,45 @@ main = runGhc ( Just libdir ) do
             contentAddressableBuildResult
 
 
+    traverse readMVar buildResults
+
+  DynFlags{ objectDir, hiDir } <-
+    getSessionDynFlags
+
+  for_ objectDir \dir ->
+    Turtle.proc
+      "rsync"
+      ( concat
+          [ [ "--recursive"
+            , "--include=*/"
+            , "--include=*.o"
+            , "--include=*.dyn_o"
+            , "--exclude=*"
+            , "--chmod=u+w"
+            ]
+          , foldMap ( \output -> [ output <> "/" ] ) outputs
+          , [ fromString dir ]
+          ]
+      )
+      empty
+
+  for_ hiDir \dir ->
+    Turtle.proc
+      "rsync"
+      ( concat
+          [ [ "--recursive"
+            , "--include=*/"
+            , "--include=*.hi"
+            , "--include=*.dyn_hi"
+            , "--exclude=*"
+            , "--chmod=u+w"
+            ]
+          , foldMap ( \output -> [ output <> "/" ] ) outputs
+          , [ fromString dir ]
+          ]
+      )
+      empty
+
 transitiveDependencies dependencyGraph buildResults srcFile = do
   let
     sourceDependencies =
@@ -184,7 +259,7 @@ transitiveDependencies dependencyGraph buildResults srcFile = do
 interpretCommandLine :: Ghc [ FilePath ]
 interpretCommandLine = do
   commandLineArguments <-
-    liftIO getArgs
+    fmap ( filter ( `notElem` [ "-c" ] ) ) ( liftIO getArgs )
 
   ( dynFlags, files ) <- do
     initialDynFlags <-

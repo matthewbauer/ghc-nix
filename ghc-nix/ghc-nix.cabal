@@ -1,0 +1,26 @@
+cabal-version: 2.0
+
+name:
+  ghc-nix
+version:
+  0.1.0.0
+synopsis:
+  Build Haskell projects using Nix as a build cache
+license-file:
+  LICENSE
+author:
+  Ollie Charles
+maintainer:
+  ollie@ocharles.org.uk
+build-type:
+  Simple
+
+executable ghc-nix
+  main-is:
+    Main.hs
+  build-depends:
+      base >=4.12 && <4.13
+    , ghc-paths ^>= 0.1.0.12
+    , ghc ^>= 8.6.5
+  default-language:
+    Haskell2010

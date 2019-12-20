@@ -128,21 +128,8 @@ main3 files = do
 
       putStrLn ( "Checking " <> srcFile )
 
-      buildResult <- tryAny do
-        Just ( Turtle.lineToText -> out ) <-
-          Turtle.fold
-            ( Turtle.inproc
-                "nix-build"
-                [ fromString hsBuilder
-                , "--arg", "hs-path", fromString srcFile
-                , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
-                , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
-                ]
-                empty
-            )
-            Control.Foldl.head
-
-        return out
+      buildResult <-
+        tryAny ( nixBuild hsBuilder srcFile dependencies modSummaryMap )
 
       case buildResult of
         Left _ -> do
@@ -151,38 +138,12 @@ main3 files = do
           fail "TODO"
 
         Right out -> do
-          Just ( Turtle.lineToText -> contentAddressableJSON ) <-
-            Turtle.fold
-              ( Turtle.inproc
-                  "nix"
-                  [ "make-content-addressable"
-                  , "--json"
-                  , out
-                  ]
-                  empty
-              )
-              Control.Foldl.head
-
           contentAddressableBuildResult <-
-            case JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 contentAddressableJSON ) of
-              Just ( JSON.Object keys ) ->
-                case HashMap.lookup "rewrites" keys of
-                  Just ( JSON.Object keys ) ->
-                    case HashMap.lookup out keys of
-                      Just ( JSON.String path ) ->
-                        return path
-
-                      _ -> do
-                        print contentAddressableJSON
-                        fail "Could not find path in CA result"
-
-              _ ->
-                fail "Unexpected JSON structure"
+            nixMakeContentAddressable out
 
           putMVar
             ( buildResults Map.! srcFile )
             contentAddressableBuildResult
-
 
     traverse readMVar buildResults
 
@@ -190,38 +151,11 @@ main3 files = do
     getSessionDynFlags
 
   for_ objectDir \dir ->
-    Turtle.proc
-      "rsync"
-      ( concat
-          [ [ "--recursive"
-            , "--include=*/"
-            , "--include=*.o"
-            , "--include=*.dyn_o"
-            , "--exclude=*"
-            , "--chmod=u+w"
-            ]
-          , foldMap ( \output -> [ output <> "/" ] ) outputs
-          , [ fromString dir ]
-          ]
-      )
-      empty
+    rsyncFiles [ ".o", ".dyn_o" ] outputs dir
 
   for_ hiDir \dir ->
-    Turtle.proc
-      "rsync"
-      ( concat
-          [ [ "--recursive"
-            , "--include=*/"
-            , "--include=*.hi"
-            , "--include=*.dyn_hi"
-            , "--exclude=*"
-            , "--chmod=u+w"
-            ]
-          , foldMap ( \output -> [ output <> "/" ] ) outputs
-          , [ fromString dir ]
-          ]
-      )
-      empty
+    rsyncFiles [ ".hi", ".dyn_hi" ] outputs dir
+
 
 transitiveDependencies dependencyGraph buildResults srcFile = do
   let
@@ -261,3 +195,67 @@ interpretCommandLine = do
   setSessionDynFlags dynFlags
 
   return ( map unLoc files )
+
+
+nixBuild hsBuilder srcFile dependencies modSummaryMap = do
+  Just ( Turtle.lineToText -> out ) <-
+    Turtle.fold
+      ( Turtle.inproc
+          "nix-build"
+          [ fromString hsBuilder
+          , "--arg", "hs-path", fromString srcFile
+          , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
+          , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
+          ]
+          empty
+      )
+      Control.Foldl.head
+
+  return out
+
+
+nixMakeContentAddressable out = do
+  Just ( Turtle.lineToText -> contentAddressableJSON ) <-
+    Turtle.fold
+      ( Turtle.inproc
+          "nix"
+          [ "make-content-addressable"
+          , "--json"
+          , out
+          ]
+          empty
+      )
+      Control.Foldl.head
+
+  case JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 contentAddressableJSON ) of
+    Just ( JSON.Object keys ) ->
+      case HashMap.lookup "rewrites" keys of
+        Just ( JSON.Object keys ) ->
+          case HashMap.lookup out keys of
+            Just ( JSON.String path ) ->
+              return path
+
+            _ -> do
+              print contentAddressableJSON
+              fail "Could not find path in CA result"
+
+    _ ->
+      fail "Unexpected JSON structure"
+
+
+rsyncFiles suffixes outputs dir = do
+  Turtle.proc
+    "rsync"
+    ( concat
+        [ [ "--recursive"
+          , "--include=*/"
+          ]
+        , foldMap ( \suffix -> [ "--include=*" <> suffix ] ) suffixes
+        , [ "--exclude=*"
+          , "--chmod=u+w"
+          ]
+        , foldMap ( \output -> [ output <> "/" ] ) outputs
+        , [ fromString dir ]
+        ]
+    )
+    empty

@@ -13,7 +13,8 @@ import Data.List ( (\\) )
 import Control.Applicative ( empty )
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
-import Control.Exception.Safe ( tryAny, throwIO )
+import Control.Concurrent.QSem
+import Control.Exception.Safe ( tryAny, throwIO, bracket_ )
 import qualified Control.Foldl
 import Control.Monad ( void )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
@@ -139,28 +140,32 @@ main3 files = do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
+    builders <-
+      newQSem 1
+
     forConcurrently_ ( Map.keys dependencyGraph ) \srcFile -> do
       dependencies <-
         transitiveDependencies dependencyGraph buildResults srcFile
 
-      putStrLn ( "Checking " <> srcFile )
+      bracket_ ( waitQSem builders ) ( signalQSem builders ) do
+        putStrLn ( "Checking " <> srcFile )
 
-      buildResult <-
-        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap )
+        buildResult <-
+          tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap )
 
-      case buildResult of
-        Left e -> do
-          putStrLn ( "Build for " ++ srcFile ++ " failed" )
+        case buildResult of
+          Left e -> do
+            putStrLn ( "Build for " ++ srcFile ++ " failed" )
 
-          throwIO e
+            throwIO e
 
-        Right out -> do
-          contentAddressableBuildResult <-
-            nixMakeContentAddressable out
+          Right out -> do
+            contentAddressableBuildResult <-
+              nixMakeContentAddressable out
 
-          putMVar
-            ( buildResults Map.! srcFile )
-            contentAddressableBuildResult
+            putMVar
+              ( buildResults Map.! srcFile )
+              contentAddressableBuildResult
 
     traverse readMVar buildResults
 
@@ -168,7 +173,7 @@ main3 files = do
     getSessionDynFlags
 
   for_ objectDir \dir ->
-    rsyncFiles [ ".o", ".dyn_o" ] outputs dir
+    rsyncFiles [ ".o", ".dyn_o", ".p_o" ] outputs dir
 
   for_ hiDir \dir ->
     rsyncFiles [ ".hi", ".dyn_hi" ] outputs dir
@@ -231,6 +236,9 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftI
   canonicalSrcPath <-
     canonicalizePath srcFile
 
+  Just packageDb <-
+    Turtle.need "GHC_NIX_PACKAGE_DB"
+
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold
       ( Turtle.inproc
@@ -241,6 +249,7 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftI
           , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
           , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
           , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
+          , "--argstr", "package-db", packageDb
           ]
           empty
       )
@@ -255,7 +264,8 @@ nixMakeContentAddressable out = liftIO do
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          [ "--experimental-features"
+          [ "--no-net"
+          , "--experimental-features"
           , "nix-command"
           , "make-content-addressable"
           , "--json"

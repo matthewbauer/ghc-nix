@@ -255,7 +255,9 @@ nixMakeContentAddressable out = liftIO do
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          [ "make-content-addressable"
+          [ "--experimental-features"
+          , "nix-command"
+          , "make-content-addressable"
           , "--json"
           , out
           ]

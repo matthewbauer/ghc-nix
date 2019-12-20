@@ -18,11 +18,11 @@ import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import Data.Foldable
 import qualified Data.HashMap.Strict as HashMap
-import Data.Map.Strict ( Map )
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.String ( fromString )
 import qualified Data.Text
+import Data.Text ( Text )
 import qualified Data.Text.Encoding
 import Data.Traversable ( for )
 import Digraph
@@ -32,8 +32,9 @@ import GHC
 import GHC.Paths ( libdir )
 import HscTypes
 import System.Environment ( getArgs )
-import System.FilePath ( takeExtension, takeFileName )
+import System.FilePath ( takeExtension )
 import qualified Turtle
+
 
 main :: IO ()
 main = do
@@ -93,9 +94,6 @@ main3 files = do
   hsc_env <-
     getSession
 
-  targets <-
-    getTargets
-
   let
     stronglyConnectedComponents =
       topSortModuleGraph False moduleGraph Nothing
@@ -103,7 +101,7 @@ main3 files = do
   dependencyGraph <-
     fmap ( Map.unionsWith mappend ) do
       for stronglyConnectedComponents \case
-        AcyclicSCC ms@ModSummary{ ms_location = ModLocation{ ml_hs_file = Just srcFile }, ms_srcimps } -> do
+        AcyclicSCC ms@ModSummary{ ms_location = ModLocation{ ml_hs_file = Just srcFile } } -> do
           dependencies <-
             for ( ms_imps ms ) \( package, L _ moduleName ) -> liftIO do
               findImportedModule hsc_env moduleName package >>= \case
@@ -115,11 +113,17 @@ main3 files = do
 
           return ( Map.singleton srcFile ( concat dependencies ) )
 
+        AcyclicSCC ModSummary{ ms_location = ModLocation{ ml_hs_file = Nothing } } ->
+          return mempty
+
+        CyclicSCC{} ->
+          return mempty
+
   outputs <- liftIO do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
-    forConcurrently_ ( Map.toList dependencyGraph ) \( srcFile, sourceDependencies ) -> do
+    forConcurrently_ ( Map.keys dependencyGraph ) \srcFile -> do
       dependencies <-
         transitiveDependencies dependencyGraph buildResults srcFile
 
@@ -154,6 +158,9 @@ main3 files = do
     rsyncFiles [ ".hi", ".dyn_hi" ] outputs dir
 
 
+transitiveDependencies
+  :: ( Traversable f, Ord a, Monoid ( f k ), Ord k )
+  => Map.Map k ( f k ) -> Map.Map k ( MVar a ) -> k -> IO ( Set.Set a )
 transitiveDependencies dependencyGraph buildResults srcFile = do
   let
     sourceDependencies =
@@ -189,12 +196,20 @@ interpretCommandLine = do
 
     return ( newDynFlags, leftOver )
 
-  setSessionDynFlags dynFlags
+  _ <-
+    setSessionDynFlags dynFlags
 
   return ( map unLoc files )
 
 
-nixBuild hsBuilder srcFile dependencies modSummaryMap = do
+nixBuild
+  :: MonadIO m
+  => String
+  -> String
+  -> Set.Set Turtle.Text
+  -> Map.Map String ModSummary
+  -> m Turtle.Text
+nixBuild hsBuilder srcFile dependencies modSummaryMap = liftIO do
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold
       ( Turtle.inproc
@@ -211,7 +226,8 @@ nixBuild hsBuilder srcFile dependencies modSummaryMap = do
   return out
 
 
-nixMakeContentAddressable out = do
+nixMakeContentAddressable :: MonadIO io => Text -> io Text
+nixMakeContentAddressable out = liftIO do
   Just ( Turtle.lineToText -> contentAddressableJSON ) <-
     Turtle.fold
       ( Turtle.inproc
@@ -227,19 +243,26 @@ nixMakeContentAddressable out = do
   case JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 contentAddressableJSON ) of
     Just ( JSON.Object keys ) ->
       case HashMap.lookup "rewrites" keys of
-        Just ( JSON.Object keys ) ->
-          case HashMap.lookup out keys of
+        Just ( JSON.Object outputs ) ->
+          case HashMap.lookup out outputs of
             Just ( JSON.String path ) ->
               return path
 
             _ -> do
               print contentAddressableJSON
+
               fail "Could not find path in CA result"
+
+        _ ->
+          fail "Could not find `rewrites`"
 
     _ ->
       fail "Unexpected JSON structure"
 
 
+rsyncFiles
+  :: ( MonadIO io, Foldable f, Foldable g )
+  => f Text -> g Text -> String -> io Turtle.ExitCode
 rsyncFiles suffixes outputs dir = do
   Turtle.proc
     "rsync"

@@ -33,3 +33,7 @@ executable ghc-nix
     , filepath
   default-language:
     Haskell2010
+  ghc-options:
+    -O2 -Wall -fwarn-incomplete-uni-patterns -fwarn-redundant-constraints
+  other-modules:
+    Paths_ghc_nix

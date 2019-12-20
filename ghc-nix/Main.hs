@@ -13,7 +13,7 @@ import Data.List ( (\\) )
 import Control.Applicative ( empty )
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
-import Control.Exception.Safe ( tryAny )
+import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
 import Control.Monad ( void )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
@@ -149,10 +149,10 @@ main3 files = do
         tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap )
 
       case buildResult of
-        Left _ -> do
+        Left e -> do
           putStrLn ( "Build for " ++ srcFile ++ " failed" )
 
-          fail "TODO"
+          throwIO e
 
         Right out -> do
           contentAddressableBuildResult <-

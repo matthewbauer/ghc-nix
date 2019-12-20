@@ -8,6 +8,7 @@ module Main ( main ) where
 
 import Paths_ghc_nix ( getDataFileName )
 
+import System.Directory ( canonicalizePath )
 import Data.List ( (\\) )
 import Control.Applicative ( empty )
 import Control.Concurrent.Async
@@ -227,13 +228,16 @@ nixBuild
   -> Map.Map String ModSummary
   -> m Turtle.Text
 nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftIO do
+  canonicalSrcPath <-
+    canonicalizePath srcFile
+
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold
       ( Turtle.inproc
           "nix-build"
           [ fromString hsBuilder
           , "--argstr", "ghc", ghcPath
-          , "--arg", "hs-path", fromString srcFile
+          , "--arg", "hs-path", fromString canonicalSrcPath
           , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
           , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
           , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
@@ -315,6 +319,7 @@ relayedArguments ( "-odir" : _ : args ) = relayedArguments args
 relayedArguments ( "-hidir" : _ : args ) = relayedArguments args
 relayedArguments ( "-stubdir" : _ : args ) = relayedArguments args
 relayedArguments ( "-package-db" : _ : args ) = relayedArguments args -- TODO We do want to relay this!
+relayedArguments ( ( '-' : 'o' : 'p' : 't' : 'P' : _ ) : args ) = relayedArguments args -- TODO We do want to relay this!
 relayedArguments ( ( '-' : 'i' : _ ) : args ) = relayedArguments args
 relayedArguments ( ( '-' : 'I' : _ ) : args ) = relayedArguments args
 relayedArguments ( x : args ) = x : relayedArguments args

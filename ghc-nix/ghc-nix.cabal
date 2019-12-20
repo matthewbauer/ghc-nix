@@ -23,6 +23,7 @@ executable ghc-nix
     , async ^>= 2.2.2
     , base >=4.12 && <4.13
     , containers ^>= 0.6.0.1
+    , directory
     , foldl ^>= 1.4.5
     , ghc-paths ^>= 0.1.0.12
     , ghc ^>= 8.6.5

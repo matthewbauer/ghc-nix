@@ -1,12 +1,12 @@
-{ hs-path, dependencies, moduleName, args }:
+{ ghc, hs-path, dependencies, moduleName, args }:
 
 with import <nixpkgs> {};
 
-runCommand "compile-${ moduleName }.hs" { buildInputs = [ ghc ]; }
+runCommand "compile-${ moduleName }.hs" {}
   ''
   mkdir /build/build-results
   cp "${hs-path}" src.hs
-  ghc -c src.hs \
+  ${builtins.storePath ghc} -c src.hs \
     ${ args } \
     -odir /build/build-results \
     -hidir /build/build-results \

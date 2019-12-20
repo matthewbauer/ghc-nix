@@ -126,6 +126,14 @@ main3 files = do
         CyclicSCC{} ->
           return mempty
 
+  ghcPath <- liftIO do
+    Just ( Turtle.lineToText -> ghcPath ) <-
+      Turtle.fold
+        ( Turtle.inproc "which" [ "ghc" ] empty )
+        Control.Foldl.head
+
+    return ghcPath
+
   outputs <- liftIO do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
@@ -137,7 +145,7 @@ main3 files = do
       putStrLn ( "Checking " <> srcFile )
 
       buildResult <-
-        tryAny ( nixBuild ghcOptions hsBuilder srcFile dependencies modSummaryMap )
+        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap )
 
       case buildResult of
         Left _ -> do
@@ -211,18 +219,20 @@ interpretCommandLine = do
 
 nixBuild
   :: MonadIO m
-  => [ String ]
+  => Text
+  -> [ String ]
   -> String
   -> String
   -> Set.Set Turtle.Text
   -> Map.Map String ModSummary
   -> m Turtle.Text
-nixBuild ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftIO do
+nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftIO do
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold
       ( Turtle.inproc
           "nix-build"
           [ fromString hsBuilder
+          , "--argstr", "ghc", ghcPath
           , "--arg", "hs-path", fromString srcFile
           , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
           , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )

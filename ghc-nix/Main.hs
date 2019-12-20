@@ -8,6 +8,7 @@ module Main ( main ) where
 
 import Paths_ghc_nix ( getDataFileName )
 
+import Data.List ( (\\) )
 import Control.Applicative ( empty )
 import Control.Concurrent.Async
 import Control.Concurrent.MVar
@@ -73,6 +74,12 @@ main2 = runGhc ( Just libdir ) do
 
 main3 :: [ FilePath ] -> Ghc ()
 main3 files = do
+  ghcOptions <- do
+    commandLineArguments <-
+      liftIO getArgs
+
+    return ( relayedArguments commandLineArguments \\ files )
+
   hsBuilder <-
     liftIO ( getDataFileName "compile-hs.nix" )
 
@@ -130,7 +137,7 @@ main3 files = do
       putStrLn ( "Checking " <> srcFile )
 
       buildResult <-
-        tryAny ( nixBuild hsBuilder srcFile dependencies modSummaryMap )
+        tryAny ( nixBuild ghcOptions hsBuilder srcFile dependencies modSummaryMap )
 
       case buildResult of
         Left _ -> do
@@ -204,12 +211,13 @@ interpretCommandLine = do
 
 nixBuild
   :: MonadIO m
-  => String
+  => [ String ]
+  -> String
   -> String
   -> Set.Set Turtle.Text
   -> Map.Map String ModSummary
   -> m Turtle.Text
-nixBuild hsBuilder srcFile dependencies modSummaryMap = liftIO do
+nixBuild ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftIO do
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold
       ( Turtle.inproc
@@ -218,6 +226,7 @@ nixBuild hsBuilder srcFile dependencies modSummaryMap = liftIO do
           , "--arg", "hs-path", fromString srcFile
           , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
           , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
+          , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
           ]
           empty
       )
@@ -287,3 +296,16 @@ proxyToGHC = do
     liftIO getArgs
 
   void ( Turtle.proc "ghc" ( map fromString arguments ) empty )
+
+
+relayedArguments :: [ String ] -> [ String ]
+relayedArguments ( "--make" : args ) = relayedArguments args
+relayedArguments ( "-outputdir" : _ : args ) = relayedArguments args
+relayedArguments ( "-odir" : _ : args ) = relayedArguments args
+relayedArguments ( "-hidir" : _ : args ) = relayedArguments args
+relayedArguments ( "-stubdir" : _ : args ) = relayedArguments args
+relayedArguments ( "-package-db" : _ : args ) = relayedArguments args -- TODO We do want to relay this!
+relayedArguments ( ( '-' : 'i' : _ ) : args ) = relayedArguments args
+relayedArguments ( ( '-' : 'I' : _ ) : args ) = relayedArguments args
+relayedArguments ( x : args ) = x : relayedArguments args
+relayedArguments [] = []

@@ -14,7 +14,7 @@ import Control.Concurrent.MVar
 import Control.Exception.Safe ( tryAny )
 import qualified Control.Foldl
 import Control.Monad ( void )
-import Control.Monad.IO.Class ( liftIO )
+import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import Data.Foldable
 import qualified Data.HashMap.Strict as HashMap
@@ -42,19 +42,19 @@ main = do
 
   case commandLineArguments of
     "--numeric-version" : _ ->
-      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+      proxyToGHC
 
     "--supported-languages" : _ ->
-      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+      proxyToGHC
 
     "--info" : _ ->
-      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+      proxyToGHC
 
     "--print-global-package-db" : _ ->
-      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+      proxyToGHC
 
     "--print-libdir" : _ ->
-      void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+      proxyToGHC
 
     _ ->
       main2
@@ -65,11 +65,8 @@ main2 = runGhc ( Just libdir ) do
   files <-
     interpretCommandLine
 
-  commandLineArguments <-
-    liftIO getArgs
-
   if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
-    then void ( Turtle.proc "ghc" ( map fromString commandLineArguments ) empty )
+    then proxyToGHC
     else main3 ( filter ( `notElem` [ "--make" ] ) files )
 
 
@@ -259,3 +256,11 @@ rsyncFiles suffixes outputs dir = do
         ]
     )
     empty
+
+
+proxyToGHC :: MonadIO io => io ()
+proxyToGHC = do
+  arguments <-
+    liftIO getArgs
+
+  void ( Turtle.proc "ghc" ( map fromString arguments ) empty )

@@ -19,8 +19,9 @@ import qualified Control.Foldl
 import Control.Monad ( void )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
+import qualified Data.Aeson.Key as Key
+import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Foldable
-import qualified Data.HashMap.Strict as HashMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Set as Set
 import Data.String ( fromString )
@@ -277,9 +278,9 @@ nixMakeContentAddressable out = liftIO do
 
   case JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 contentAddressableJSON ) of
     Just ( JSON.Object keys ) ->
-      case HashMap.lookup "rewrites" keys of
+      case KeyMap.lookup "rewrites" keys of
         Just ( JSON.Object outputs ) ->
-          case HashMap.lookup out outputs of
+          case KeyMap.lookup (Key.fromText out) outputs of
             Just ( JSON.String path ) ->
               return path
 

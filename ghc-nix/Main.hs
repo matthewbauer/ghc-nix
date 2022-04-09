@@ -268,6 +268,7 @@ nixMakeContentAddressable out = liftIO do
           [ "--no-net"
           , "--experimental-features"
           , "nix-command"
+          , "store"
           , "make-content-addressable"
           , "--json"
           , out

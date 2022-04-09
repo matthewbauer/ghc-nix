@@ -36,6 +36,7 @@ import GHC
 import GHC.Paths ( libdir )
 import HscTypes
 import System.Environment ( getArgs )
+import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
 import qualified Turtle
 
@@ -61,22 +62,16 @@ main = do
     "--print-libdir" : _ ->
       proxyToGHC
 
-    _ ->
-      main2
+    _ -> runGhc ( Just libdir ) $ do
+      files <-
+        interpretCommandLine
 
+      if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
+        then proxyToGHC
+        else compileHaskell ( filter ( `notElem` [ "--make" ] ) files )
 
-main2 :: IO ()
-main2 = runGhc ( Just libdir ) do
-  files <-
-    interpretCommandLine
-
-  if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
-    then proxyToGHC
-    else main3 ( filter ( `notElem` [ "--make" ] ) files )
-
-
-main3 :: [ FilePath ] -> Ghc ()
-main3 files = do
+compileHaskell :: [ FilePath ] -> Ghc ()
+compileHaskell files = do
   ghcOptions <- do
     commandLineArguments <-
       liftIO getArgs
@@ -206,8 +201,13 @@ transitiveDependencies dependencyGraph buildResults srcFile = do
 
 interpretCommandLine :: Ghc [ FilePath ]
 interpretCommandLine = do
-  commandLineArguments <-
-    fmap ( filter ( `notElem` [ "-c" ] ) ) ( liftIO getArgs )
+  args <- liftIO getArgs
+
+  Turtle.when (null args) $ do
+    liftIO $ putStr $ "Provide Haskell files as arguments."
+    liftIO $ exitFailure
+
+  let commandLineArguments = filter ( `notElem` [ "-c" ] ) args
 
   ( dynFlags, files ) <- do
     initialDynFlags <-

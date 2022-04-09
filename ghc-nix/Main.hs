@@ -237,8 +237,10 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftI
   canonicalSrcPath <-
     canonicalizePath srcFile
 
-  Just packageDb <-
-    Turtle.need "GHC_NIX_PACKAGE_DB"
+  Just ghcLibDir <-
+    Turtle.need "NIX_GHC_LIBDIR"
+
+  Right packageDb <- pure $ Turtle.toText $ Turtle.fromText ghcLibDir Turtle.</> "package.conf.d"
 
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold

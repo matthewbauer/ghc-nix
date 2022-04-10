@@ -64,15 +64,15 @@ main = do
       proxyToGHC
 
     _ -> runGhc ( Just libdir ) $ do
-      files <-
+      (files, verbosity) <-
         interpretCommandLine
 
       if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
         then proxyToGHC
-        else compileHaskell ( filter ( `notElem` [ "--make" ] ) files )
+        else compileHaskell ( filter ( `notElem` [ "--make" ] ) files ) verbosity
 
-compileHaskell :: [ FilePath ] -> Ghc ()
-compileHaskell files = do
+compileHaskell :: [ FilePath ] -> Int -> Ghc ()
+compileHaskell files verbosity = do
   ghcOptions <- do
     commandLineArguments <-
       liftIO getArgs
@@ -139,10 +139,10 @@ compileHaskell files = do
         transitiveDependencies dependencyGraph buildResults srcFile
 
       bracket_ ( waitQSem builders ) ( signalQSem builders ) do
-        putStrLn ( "Checking " <> srcFile )
+        Turtle.when ( verbosity >= 2 ) $ putStrLn ( "Checking " <> srcFile )
 
         buildResult <-
-          tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap )
+          tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity )
 
         case buildResult of
           Left e -> do
@@ -194,7 +194,7 @@ transitiveDependencies dependencyGraph buildResults srcFile = do
           sourceDependencies
 
 
-interpretCommandLine :: Ghc [ FilePath ]
+interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do
   args <- liftIO getArgs
 
@@ -216,7 +216,7 @@ interpretCommandLine = do
   _ <-
     setSessionDynFlags dynFlags
 
-  return ( map unLoc files )
+  return ( map unLoc files, verbosity dynFlags )
 
 
 nixBuild
@@ -227,8 +227,9 @@ nixBuild
   -> String
   -> Set.Set Turtle.Text
   -> Map.Map String ModSummary
+  -> Int
   -> m Turtle.Text
-nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftIO do
+nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity = liftIO do
   canonicalSrcPath <-
     canonicalizePath srcFile
 
@@ -245,16 +246,16 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftI
     Turtle.fold
       ( Turtle.inproc
           "nix-build"
-          [ fromString hsBuilder
-          , "--argstr", "ghc", ghcPath
-          , "--arg", "hs-path", fromString canonicalSrcPath
-          , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
-          , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
-          , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
-          , "--argstr", "package-db", packageDb
-          , "--arg" , "dataFiles", "[" <> Data.Text.intercalate " " ( map (\dataFile -> "\"" <> dataFile <> "\"") dataFiles ) <> "]"
-          , "--argstr" , "workingDirectory", fromString workingDirectory
-          ]
+          ( [ fromString hsBuilder
+            , "--argstr", "ghc", ghcPath
+            , "--arg", "hs-path", fromString canonicalSrcPath
+            , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
+            , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
+            , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
+            , "--argstr", "package-db", packageDb
+            , "--arg" , "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
+            , "--argstr" , "workingDirectory", fromString workingDirectory
+            ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty
       )
       Control.Foldl.head

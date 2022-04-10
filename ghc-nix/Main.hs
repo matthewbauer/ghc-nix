@@ -9,6 +9,7 @@ module Main ( main ) where
 import Paths_ghc_nix ( getDataFileName )
 
 import System.Directory ( canonicalizePath )
+import System.Posix.Directory ( getWorkingDirectory )
 import Data.List ( (\\) )
 import Control.Applicative ( empty )
 import Control.Concurrent.Async
@@ -231,8 +232,12 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftI
   canonicalSrcPath <-
     canonicalizePath srcFile
 
+  workingDirectory <- getWorkingDirectory
+
   Just ghcLibDir <-
     Turtle.need "NIX_GHC_LIBDIR"
+
+  Just dataFiles <- fmap (Data.Text.splitOn " ") <$> Turtle.need "NIX_GHC_DATA_FILES"
 
   Right packageDb <- pure $ Turtle.toText $ Turtle.fromText ghcLibDir Turtle.</> "package.conf.d"
 
@@ -247,6 +252,8 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap = liftI
           , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
           , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
           , "--argstr", "package-db", packageDb
+          , "--arg" , "dataFiles", "[" <> Data.Text.intercalate " " ( map (\dataFile -> "\"" <> dataFile <> "\"") dataFiles ) <> "]"
+          , "--argstr" , "workingDirectory", fromString workingDirectory
           ]
           empty
       )

@@ -124,15 +124,9 @@ compileHaskell files = do
         CyclicSCC{} ->
           return mempty
 
-  ghcPath <- liftIO do
-    Just ( Turtle.lineToText -> ghcPath ) <-
-      Turtle.fold
-        ( Turtle.inproc "which" [ "ghc" ] empty )
-        Control.Foldl.head
-
-    return ghcPath
-
   outputs <- liftIO do
+    Just ghcPath <- Turtle.need "NIX_GHC"
+
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 

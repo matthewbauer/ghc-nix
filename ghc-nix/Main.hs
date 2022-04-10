@@ -63,8 +63,8 @@ main = do
     "--print-libdir" : _ ->
       proxyToGHC
 
-    _ -> runGhc ( Just libdir ) $ do
-      (files, verbosity) <-
+    _ -> runGhc ( Just libdir ) do
+      ( files, verbosity ) <-
         interpretCommandLine
 
       if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
@@ -139,14 +139,14 @@ compileHaskell files verbosity = do
         transitiveDependencies dependencyGraph buildResults srcFile
 
       bracket_ ( waitQSem builders ) ( signalQSem builders ) do
-        Turtle.when ( verbosity >= 2 ) $ putStrLn ( "Checking " <> srcFile )
+        Turtle.when ( verbosity >= 2 ) ( putStrLn ( "Checking " <> srcFile ) )
 
         buildResult <-
           tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity )
 
         case buildResult of
           Left e -> do
-            putStrLn ( "Build for " ++ srcFile ++ " failed" )
+            putStrLn ( "Build for " <> srcFile <> " failed" )
 
             throwIO e
 
@@ -198,9 +198,9 @@ interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do
   args <- liftIO getArgs
 
-  Turtle.when (null args) $ do
-    liftIO $ putStr $ "Provide Haskell files as arguments."
-    liftIO $ exitFailure
+  Turtle.when ( null args ) do
+    liftIO ( putStr "Provide Haskell files as arguments." )
+    liftIO exitFailure
 
   let commandLineArguments = filter ( `notElem` [ "-c" ] ) args
 
@@ -238,9 +238,9 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosi
   Just ghcLibDir <-
     Turtle.need "NIX_GHC_LIBDIR"
 
-  Just dataFiles <- fmap (Data.Text.splitOn " ") <$> Turtle.need "NIX_GHC_DATA_FILES"
+  Just dataFiles <- fmap ( fmap (Data.Text.splitOn " ") ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
-  Right packageDb <- pure $ Turtle.toText $ Turtle.fromText ghcLibDir Turtle.</> "package.conf.d"
+  Right packageDb <- pure ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
 
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold
@@ -285,7 +285,7 @@ nixMakeContentAddressable out = liftIO do
     Just ( JSON.Object keys ) ->
       case KeyMap.lookup "rewrites" keys of
         Just ( JSON.Object outputs ) ->
-          case KeyMap.lookup (Key.fromText out) outputs of
+          case KeyMap.lookup ( Key.fromText out ) outputs of
             Just ( JSON.String path ) ->
               return path
 

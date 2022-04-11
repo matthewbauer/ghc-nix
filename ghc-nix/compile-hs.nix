@@ -2,7 +2,7 @@
 
 with import <nixpkgs> {};
 
-runCommand "compile-${ moduleName }.hs" {}
+runCommand "compile-${ moduleName }" {}
   ''
   mkdir build-results
   cp "${hs-path}" src.hs

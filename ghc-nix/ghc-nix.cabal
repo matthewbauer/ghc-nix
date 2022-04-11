@@ -36,6 +36,6 @@ executable ghc-nix
   default-language:
     Haskell2010
   ghc-options:
-    -O2 -Wall -fwarn-incomplete-uni-patterns -fwarn-redundant-constraints -rtsopts
+    -O2 -Wall -fwarn-incomplete-uni-patterns -fwarn-redundant-constraints -threaded -rtsopts -with-rtsopts=-N
   other-modules:
     Paths_ghc_nix

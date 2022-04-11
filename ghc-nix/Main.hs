@@ -255,6 +255,7 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosi
             , "--argstr", "package-db", packageDb
             , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
             , "--argstr", "workingDirectory", fromString workingDirectory
+            , "--no-out-link"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty
       )

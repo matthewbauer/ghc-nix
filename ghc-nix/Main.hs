@@ -126,7 +126,7 @@ compileHaskell files verbosity = do
           return mempty
 
   outputs <- liftIO do
-    Just ghcPath <- Turtle.need "NIX_GHC"
+    Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
 
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )

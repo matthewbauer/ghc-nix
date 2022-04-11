@@ -10,7 +10,9 @@ import Paths_ghc_nix ( getDataFileName )
 
 import System.Directory ( canonicalizePath )
 import System.Posix.Directory ( getWorkingDirectory )
+import System.Info ( os, arch)
 import Data.List ( (\\) )
+import qualified Data.Vector as Vector
 import Control.Applicative ( empty )
 import Control.Concurrent.MVar
 import Control.Exception.Safe ( tryAny, throwIO )
@@ -71,6 +73,39 @@ main = do
       if ".c" `elem` map takeExtension files || ".o" `elem` map takeExtension files || ".dyn_o" `elem` map takeExtension files
         then proxyToGHC
         else compileHaskell ( filter ( `notElem` [ "--make" ] ) files ) verbosity
+
+
+data NixBuildJSON = NixBuildJSON { nixBuildJSONOutputs :: Map.Map Text Text }
+
+instance JSON.FromJSON NixBuildJSON where
+  parseJSON = JSON.withArray "NixBuildJSON" \arr -> do
+    JSON.withObject "NixBuildJSON" ( \o -> do
+      nixBuildJSONOutputs <- o JSON..: "outputs"
+      return NixBuildJSON { nixBuildJSONOutputs }
+      ) ( Vector.head arr )
+
+nixBuildTool :: (MonadIO io, MonadFail io) => String -> String -> io Text
+nixBuildTool system name = do
+  Just ( Turtle.lineToText -> bashJSON ) <-
+    Turtle.fold
+      ( Turtle.inproc
+          "nix"
+          ( [ "--extra-experimental-features"
+            , "nix-command flakes"
+            , "build"
+            , "nixpkgs#legacyPackages." <> fromString system <> "." <> fromString name
+            , "--no-link"
+            , "--quiet"
+            , "--json"
+            ])
+          empty
+      )
+      Control.Foldl.head
+
+  Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 bashJSON ) )
+
+  return ( nixBuildJSONOutputs Map.! "out" )
+
 
 compileHaskell :: [ FilePath ] -> Int -> Ghc ()
 compileHaskell files verbosity = do
@@ -133,33 +168,10 @@ compileHaskell files verbosity = do
   outputs <- liftIO do
     Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
 
-    Just ( Turtle.lineToText -> bash ) <-
-      Turtle.fold
-        ( Turtle.inproc
-            "nix-build"
-            ( [ "<nixpkgs>"
-              , "-A"
-              , "bash"
-              , "--no-out-link"
-              , "--quiet"
-              ])
-            empty
-        )
-        Control.Foldl.head
+    let system = arch <> "-" <> os
 
-    Just ( Turtle.lineToText -> coreutils ) <-
-      Turtle.fold
-        ( Turtle.inproc
-            "nix-build"
-            ( [ "<nixpkgs>"
-              , "-A"
-              , "coreutils"
-              , "--no-out-link"
-              , "--quiet"
-              ])
-            empty
-        )
-        Control.Foldl.head
+    bash <- nixBuildTool system "bash"
+    coreutils <- nixBuildTool system "coreutils"
 
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
@@ -179,7 +191,7 @@ compileHaskell files verbosity = do
         return n'
 
       buildResult <-
-        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils )
+        tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils system )
 
       case buildResult of
         Left e -> do
@@ -256,7 +268,7 @@ interpretCommandLine = do
   return ( map GHC.unLoc files, verbosity dynFlags )
 
 
-nixBuild
+nixBuildHaskell
   :: MonadIO m
   => Text
   -> [ String ]
@@ -267,8 +279,9 @@ nixBuild
   -> Int
   -> Turtle.Text
   -> Turtle.Text
+  -> String
   -> m Turtle.Text
-nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils = liftIO do
+nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils system = liftIO do
   canonicalSrcPath <-
     canonicalizePath srcFile
 
@@ -281,11 +294,14 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity 
 
   Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
 
-  Just ( Turtle.lineToText -> out ) <-
+  Just ( Turtle.lineToText -> json ) <-
     Turtle.fold
       ( Turtle.inproc
-          "nix-build"
-          ( [ fromString hsBuilder
+          "nix"
+          ( [ "--extra-experimental-features"
+            , "nix-command"
+            , "build"
+            , "-f", fromString hsBuilder
             , "--argstr", "ghc", ghcPath
             , "--arg", "hs-path", fromString canonicalSrcPath
             , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
@@ -296,13 +312,16 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity 
             , "--argstr", "workingDirectory", fromString workingDirectory
             , "--argstr", "bash", bash
             , "--argstr", "coreutils", coreutils
-            , "--no-out-link"
+            , "--no-link"
+            , "--json"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty
       )
       Control.Foldl.head
 
-  return out
+  Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 json ) )
+
+  return ( nixBuildJSONOutputs Map.! "out" )
 
 
 nixMakeContentAddressable :: MonadIO io => Text -> io Text
@@ -311,8 +330,7 @@ nixMakeContentAddressable out = liftIO do
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          [ "--no-net"
-          , "--experimental-features"
+          [ "--extra-experimental-features"
           , "nix-command"
           , "store"
           , "make-content-addressable"

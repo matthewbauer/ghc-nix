@@ -32,7 +32,8 @@ import Data.Traversable ( for )
 import Digraph
 import DynFlags
 import Finder
-import GHC
+import qualified GHC as GHC
+import GHC ( Ghc )
 import GHC.Paths ( libdir )
 import HscTypes
 import System.Environment ( getArgs )
@@ -63,7 +64,7 @@ main = do
     "--print-libdir" : _ ->
       proxyToGHC
 
-    _ -> runGhc ( Just libdir ) do
+    _ -> GHC.runGhc ( Just libdir ) do
       ( files, verbosity ) <-
         interpretCommandLine
 
@@ -83,39 +84,39 @@ compileHaskell files verbosity = do
     liftIO ( getDataFileName "compile-hs.nix" )
 
   targets <-
-    traverse ( \filePath -> guessTarget filePath Nothing ) files
+    traverse ( \filePath -> GHC.guessTarget filePath Nothing ) files
 
-  setTargets targets
+  GHC.setTargets targets
 
   moduleGraph <-
-    depanal [] True
+    GHC.depanal [] True
 
   let
     modSummaryMap = Map.fromList do
-      ms@ModSummary{ ms_location = ModLocation{ ml_hs_file = Just srcFile } } <-
+      ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } <-
         mgModSummaries moduleGraph
 
       return ( srcFile, ms )
 
   hsc_env <-
-    getSession
+    GHC.getSession
 
   let
     stronglyConnectedComponents =
-      topSortModuleGraph False moduleGraph Nothing
+      GHC.topSortModuleGraph False moduleGraph Nothing
 
     topoSortedSrcFiles = flip Maybe.mapMaybe stronglyConnectedComponents \case
-      AcyclicSCC ModSummary{ ms_location = ModLocation{ ml_hs_file = srcFile } } -> srcFile
+      AcyclicSCC GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = srcFile } } -> srcFile
       CyclicSCC{} -> Nothing
 
   dependencyGraph <-
     fmap ( Map.unionsWith mappend ) do
       for stronglyConnectedComponents \case
-        AcyclicSCC ms@ModSummary{ ms_location = ModLocation{ ml_hs_file = Just srcFile } } -> do
+        AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } -> do
           dependencies <-
-            for ( ms_imps ms ) \( package, L _ moduleName ) -> liftIO do
+            for ( ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
               findImportedModule hsc_env moduleName package >>= \case
-                Found ModLocation{ ml_hs_file = Just hsFile } _ ->
+                Found GHC.ModLocation{ GHC.ml_hs_file = Just hsFile } _ ->
                   return [ hsFile ]
 
                 _ ->
@@ -123,7 +124,7 @@ compileHaskell files verbosity = do
 
           return ( Map.singleton srcFile ( concat dependencies ) )
 
-        AcyclicSCC ModSummary{ ms_location = ModLocation{ ml_hs_file = Nothing } } ->
+        AcyclicSCC GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } ->
           return mempty
 
         CyclicSCC{} ->
@@ -135,14 +136,22 @@ compileHaskell files verbosity = do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
+    let totalModules = length topoSortedSrcFiles
+
+    numCompiled <- newMVar ( 0 :: Int )
+
     pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
       dependencies <-
         transitiveDependencies dependencyGraph buildResults srcFile
 
-      putStrLn ( "Checking " <> srcFile )
+      let moduleName = GHC.moduleNameString ( GHC.moduleName ( GHC.ms_mod ( modSummaryMap Map.! srcFile ) ) )
+      modifyMVar_ numCompiled \n -> do
+        let n' = n + 1
+        putStrLn ( "[ " <> show n' <> " of " <> show totalModules <> "]  Compiling " <> moduleName <> " ( " <> srcFile <> " )" )
+        return n'
 
       buildResult <-
-        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity )
+        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity )
 
       case buildResult of
         Left e -> do
@@ -161,7 +170,7 @@ compileHaskell files verbosity = do
     traverse readMVar buildResults
 
   DynFlags{ objectDir, hiDir } <-
-    getSessionDynFlags
+    GHC.getSessionDynFlags
 
   for_ objectDir \dir ->
     rsyncFiles [ ".o", ".dyn_o", ".p_o" ] outputs dir
@@ -206,17 +215,17 @@ interpretCommandLine = do
 
   ( dynFlags, files ) <- do
     initialDynFlags <-
-      getSessionDynFlags
+      GHC.getSessionDynFlags
 
     ( newDynFlags, leftOver, _ ) <-
-      parseDynamicFlagsCmdLine initialDynFlags ( map noLoc commandLineArguments )
+      parseDynamicFlagsCmdLine initialDynFlags ( map GHC.noLoc commandLineArguments )
 
     return ( newDynFlags, leftOver )
 
   _ <-
-    setSessionDynFlags dynFlags
+    GHC.setSessionDynFlags dynFlags
 
-  return ( map unLoc files, verbosity dynFlags )
+  return ( map GHC.unLoc files, verbosity dynFlags )
 
 
 nixBuild
@@ -226,10 +235,10 @@ nixBuild
   -> String
   -> String
   -> Set.Set Turtle.Text
-  -> Map.Map String ModSummary
+  -> String
   -> Int
   -> m Turtle.Text
-nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity = liftIO do
+nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity = liftIO do
   canonicalSrcPath <-
     canonicalizePath srcFile
 
@@ -250,7 +259,7 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosi
             , "--argstr", "ghc", ghcPath
             , "--arg", "hs-path", fromString canonicalSrcPath
             , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
-            , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
+            , "--argstr", "moduleName", fromString moduleName
             , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
             , "--argstr", "package-db", packageDb
             , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"

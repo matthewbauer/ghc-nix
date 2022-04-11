@@ -249,7 +249,7 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity 
 
   Just dataFiles <- fmap ( fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
-  Right packageDb <- pure ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
+  Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
 
   Just ( Turtle.lineToText -> out ) <-
     Turtle.fold

@@ -139,7 +139,7 @@ compileHaskell files verbosity = do
         transitiveDependencies dependencyGraph buildResults srcFile
 
       bracket_ ( waitQSem builders ) ( signalQSem builders ) do
-        Turtle.when ( verbosity >= 2 ) ( putStrLn ( "Checking " <> srcFile ) )
+        putStrLn ( "Checking " <> srcFile )
 
         buildResult <-
           tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity )

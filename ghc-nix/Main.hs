@@ -133,6 +133,34 @@ compileHaskell files verbosity = do
   outputs <- liftIO do
     Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
 
+    Just ( Turtle.lineToText -> bash ) <-
+      Turtle.fold
+        ( Turtle.inproc
+            "nix-build"
+            ( [ "<nixpkgs>"
+              , "-A"
+              , "bash"
+              , "--no-out-link"
+              , "--quiet"
+              ])
+            empty
+        )
+        Control.Foldl.head
+
+    Just ( Turtle.lineToText -> coreutils ) <-
+      Turtle.fold
+        ( Turtle.inproc
+            "nix-build"
+            ( [ "<nixpkgs>"
+              , "-A"
+              , "coreutils"
+              , "--no-out-link"
+              , "--quiet"
+              ])
+            empty
+        )
+        Control.Foldl.head
+
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
@@ -151,7 +179,7 @@ compileHaskell files verbosity = do
         return n'
 
       buildResult <-
-        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity )
+        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils )
 
       case buildResult of
         Left e -> do
@@ -237,8 +265,10 @@ nixBuild
   -> Set.Set Turtle.Text
   -> String
   -> Int
+  -> Turtle.Text
+  -> Turtle.Text
   -> m Turtle.Text
-nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity = liftIO do
+nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils = liftIO do
   canonicalSrcPath <-
     canonicalizePath srcFile
 
@@ -264,6 +294,8 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity 
             , "--argstr", "package-db", packageDb
             , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
             , "--argstr", "workingDirectory", fromString workingDirectory
+            , "--argstr", "bash", bash
+            , "--argstr", "coreutils", coreutils
             , "--no-out-link"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty

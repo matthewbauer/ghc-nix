@@ -12,10 +12,8 @@ import System.Directory ( canonicalizePath )
 import System.Posix.Directory ( getWorkingDirectory )
 import Data.List ( (\\) )
 import Control.Applicative ( empty )
-import Control.Concurrent.Async
 import Control.Concurrent.MVar
-import Control.Concurrent.QSem
-import Control.Exception.Safe ( tryAny, throwIO, bracket_ )
+import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
 import Control.Monad ( void )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
@@ -24,6 +22,7 @@ import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 import Data.Foldable
 import qualified Data.Map.Strict as Map
+import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
 import Data.String ( fromString )
 import qualified Data.Text
@@ -34,13 +33,13 @@ import Digraph
 import DynFlags
 import Finder
 import GHC
-import GHC.Conc ( getNumProcessors )
 import GHC.Paths ( libdir )
 import HscTypes
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
 import qualified Turtle
+import UnliftIO.Async ( pooledForConcurrently_ )
 
 
 main :: IO ()
@@ -105,6 +104,10 @@ compileHaskell files verbosity = do
     stronglyConnectedComponents =
       topSortModuleGraph False moduleGraph Nothing
 
+    topoSortedSrcFiles = flip Maybe.mapMaybe stronglyConnectedComponents \case
+      AcyclicSCC ModSummary{ ms_location = ModLocation{ ml_hs_file = srcFile } } -> srcFile
+      CyclicSCC{} -> Nothing
+
   dependencyGraph <-
     fmap ( Map.unionsWith mappend ) do
       for stronglyConnectedComponents \case
@@ -132,34 +135,28 @@ compileHaskell files verbosity = do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
-    numProc <- getNumProcessors
-
-    builders <-
-      newQSem numProc
-
-    forConcurrently_ ( Map.keys dependencyGraph ) \srcFile -> do
+    pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
       dependencies <-
         transitiveDependencies dependencyGraph buildResults srcFile
 
-      bracket_ ( waitQSem builders ) ( signalQSem builders ) do
-        putStrLn ( "Checking " <> srcFile )
+      putStrLn ( "Checking " <> srcFile )
 
-        buildResult <-
-          tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity )
+      buildResult <-
+        tryAny ( nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosity )
 
-        case buildResult of
-          Left e -> do
-            putStrLn ( "Build for " <> srcFile <> " failed" )
+      case buildResult of
+        Left e -> do
+          putStrLn ( "Build for " <> srcFile <> " failed" )
 
-            throwIO e
+          throwIO e
 
-          Right out -> do
-            contentAddressableBuildResult <-
-              nixMakeContentAddressable out
+        Right out -> do
+          contentAddressableBuildResult <-
+            nixMakeContentAddressable out
 
-            putMVar
-              ( buildResults Map.! srcFile )
-              contentAddressableBuildResult
+          putMVar
+            ( buildResults Map.! srcFile )
+            contentAddressableBuildResult
 
     traverse readMVar buildResults
 

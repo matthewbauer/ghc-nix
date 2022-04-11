@@ -42,4 +42,5 @@ in derivation {
   PATH = "${builtins.storePath coreutils}/bin";
   inherit system;
   args = [ "-e" (builtins.toFile "builder.sh" builder) ];
+  preferLocalBuild = true;
 }

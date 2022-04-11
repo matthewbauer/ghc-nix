@@ -314,6 +314,11 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "--argstr", "coreutils", coreutils
             , "--no-link"
             , "--json"
+            , "--substituters"
+            , ""
+            , "--builders"
+            , ""
+            , "-L"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty
       )

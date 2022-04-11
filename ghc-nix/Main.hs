@@ -34,6 +34,7 @@ import Digraph
 import DynFlags
 import Finder
 import GHC
+import GHC.Conc ( getNumProcessors )
 import GHC.Paths ( libdir )
 import HscTypes
 import System.Environment ( getArgs )
@@ -131,8 +132,10 @@ compileHaskell files verbosity = do
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
 
+    numProc <- getNumProcessors
+
     builders <-
-      newQSem 1
+      newQSem numProc
 
     forConcurrently_ ( Map.keys dependencyGraph ) \srcFile -> do
       dependencies <-

@@ -238,7 +238,7 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosi
   Just ghcLibDir <-
     Turtle.need "NIX_GHC_LIBDIR"
 
-  Just dataFiles <- fmap ( fmap (Data.Text.splitOn " ") ) ( Turtle.need "NIX_GHC_DATA_FILES" )
+  Just dataFiles <- fmap ( fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
   Right packageDb <- pure ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
 
@@ -253,8 +253,8 @@ nixBuild ghcPath ghcOptions hsBuilder srcFile dependencies modSummaryMap verbosi
             , "--argstr", "moduleName", fromString ( moduleNameString ( moduleName ( ms_mod ( modSummaryMap Map.! srcFile ) ) ) )
             , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
             , "--argstr", "package-db", packageDb
-            , "--arg" , "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
-            , "--argstr" , "workingDirectory", fromString workingDirectory
+            , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
+            , "--argstr", "workingDirectory", fromString workingDirectory
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty
       )

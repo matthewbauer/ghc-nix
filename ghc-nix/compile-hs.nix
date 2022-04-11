@@ -7,7 +7,7 @@ let
   moduleBaseName = baseNameOf (builtins.replaceStrings ["."] ["/"] moduleName);
 in runCommand "compile-${ moduleName }" {}
   ''
-  cp "${hs-path}" "${moduleBaseName}.hs"
+  ln -s "${hs-path}" "${moduleBaseName}.hs"
   ${lib.concatMapStringsSep "\n" (dataFile: ''
     mkdir -p $(dirname ${dataFile})
     ln -s ${/. + (workingDirectory + "/" + dataFile)} ${dataFile}

@@ -202,7 +202,7 @@ interpretCommandLine = do
   args <- liftIO getArgs
 
   Turtle.when ( null args ) do
-    liftIO ( putStr "Provide Haskell files as arguments." )
+    liftIO ( putStrLn "Provide Haskell files as arguments." )
     liftIO exitFailure
 
   let commandLineArguments = filter ( `notElem` [ "-c" ] ) args

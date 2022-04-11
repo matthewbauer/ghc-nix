@@ -318,6 +318,8 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , ""
             , "--builders"
             , ""
+            , "--pure-eval"
+            , "--argstr", "system", fromSting system
             , "-L"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty

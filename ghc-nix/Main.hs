@@ -180,8 +180,8 @@ compileHaskell files verbosity = do
     numCompiled <- newMVar ( 0 :: Int )
 
     pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
-      dependencies <-
-        transitiveDependencies dependencyGraph buildResults srcFile
+      (_, dependencies) <-
+        transitiveDependencies dependencyGraph buildResults Set.empty srcFile
 
       let moduleName = GHC.moduleNameString ( GHC.moduleName ( GHC.ms_mod ( modSummaryMap Map.! srcFile ) ) )
       modifyMVar_ numCompiled \n -> do
@@ -219,15 +219,15 @@ compileHaskell files verbosity = do
 
 
 transitiveDependencies
-  :: ( Traversable f, Ord a, Monoid ( f k ), Ord k )
-  => Map.Map k ( f k ) -> Map.Map k ( MVar a ) -> k -> IO ( Set.Set a )
-transitiveDependencies dependencyGraph buildResults srcFile = do
+  :: ( Ord a, Ord k )
+  => Map.Map k [ k ] -> Map.Map k ( MVar a ) -> Set.Set k -> k -> IO ( Set.Set k, Set.Set a )
+transitiveDependencies dependencyGraph buildResults hasVisited srcFile = do
   let
     sourceDependencies =
-      fold ( Map.lookup srcFile dependencyGraph )
+      filter ( `Set.notMember` hasVisited ) ( dependencyGraph Map.! srcFile )
 
   immediateDependencies <-
-    fmap concat do
+    fmap (Set.fromList . concat) do
       for sourceDependencies \dep ->
         case Map.lookup dep buildResults of
           Nothing ->
@@ -236,11 +236,10 @@ transitiveDependencies dependencyGraph buildResults srcFile = do
           Just mvar ->
             return <$> readMVar mvar
 
-  Set.union ( Set.fromList immediateDependencies ) . Set.unions
-    <$> traverse
-          ( transitiveDependencies dependencyGraph buildResults )
-          sourceDependencies
-
+  foldlM ( \( hasVisited', dependencies ) srcFile' -> do
+    ( hasVisited'', dependencies' ) <- transitiveDependencies dependencyGraph buildResults hasVisited' srcFile'
+    return ( Set.unions [ Set.singleton srcFile' , hasVisited' , hasVisited'' ] , Set.union dependencies dependencies' )
+    ) ( hasVisited , immediateDependencies ) sourceDependencies
 
 interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do

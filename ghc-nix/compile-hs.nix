@@ -52,6 +52,6 @@ in derivation {
 
   shopt -s nullglob
   mkdir -p "''${outputs[out]}/$moduleBaseDir"
-  mv *.o *.hi *.dyn_o *.dyn_hi *.p_o "''${outputs[out]}/$moduleBaseDir"
+  mv ./*.o ./*.hi ./*.dyn_o ./*.dyn_hi ./*.p_o "''${outputs[out]}/$moduleBaseDir"
   '') ];
 }

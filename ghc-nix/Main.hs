@@ -90,8 +90,7 @@ nixBuildTool system name = do
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          ( [ "--extra-experimental-features"
-            , "nix-command flakes"
+          ( [ "--extra-experimental-features", "nix-command flakes"
             , "build"
             , "nixpkgs#legacyPackages." <> fromString system <> "." <> fromString name
             , "--no-link"
@@ -298,8 +297,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          ( [ "--extra-experimental-features"
-            , "nix-command"
+          ( [ "--extra-experimental-features", "nix-command"
             , "build"
             , "-f", fromString hsBuilder
             , "--argstr", "ghc", ghcPath
@@ -314,12 +312,10 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "--argstr", "coreutils", coreutils
             , "--no-link"
             , "--json"
-            , "--substituters"
-            , ""
-            , "--builders"
-            , ""
+            , "--substituters", ""
+            , "--builders", ""
             , "--pure-eval"
-            , "--argstr", "system", fromSting system
+            , "--argstr", "system", fromString system
             , "-L"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty
@@ -337,8 +333,7 @@ nixMakeContentAddressable out = liftIO do
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          [ "--extra-experimental-features"
-          , "nix-command"
+          [ "--extra-experimental-features", "nix-command"
           , "store"
           , "make-content-addressable"
           , "--json"

@@ -37,7 +37,7 @@ let
   '';
 
 in derivation {
-  name = moduleBaseName;
+  name = moduleName;
   builder = "${builtins.storePath bash}/bin/bash";
   PATH = "${builtins.storePath coreutils}/bin";
   inherit system;

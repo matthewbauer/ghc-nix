@@ -84,15 +84,15 @@ instance JSON.FromJSON NixBuildJSON where
       return NixBuildJSON { nixBuildJSONOutputs }
       ) ( Vector.head arr )
 
-nixBuildTool :: (MonadIO io, MonadFail io) => String -> String -> io Text
-nixBuildTool system name = do
+nixBuildTool :: (MonadIO io, MonadFail io) => String -> Text -> Text -> io Text
+nixBuildTool system name output = do
   Just ( Turtle.lineToText -> bashJSON ) <-
     Turtle.fold
       ( Turtle.inproc
           "nix"
           ( [ "--extra-experimental-features", "nix-command flakes"
             , "build"
-            , "nixpkgs#legacyPackages." <> fromString system <> "." <> fromString name
+            , "nixpkgs#legacyPackages." <> fromString system <> "." <> name <> "." <> output
             , "--no-link"
             , "--quiet"
             , "--json"
@@ -103,7 +103,9 @@ nixBuildTool system name = do
 
   Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 bashJSON ) )
 
-  return ( nixBuildJSONOutputs Map.! "out" )
+  Just out <- return ( Map.lookup output nixBuildJSONOutputs )
+
+  return out
 
 
 compileHaskell :: [ FilePath ] -> Int -> Ghc ()
@@ -169,8 +171,9 @@ compileHaskell files verbosity = do
 
     let system = arch <> "-" <> os
 
-    bash <- nixBuildTool system "bash"
-    coreutils <- nixBuildTool system "coreutils"
+    bash <- nixBuildTool system "bash" "out"
+    coreutils <- nixBuildTool system "coreutils" "out"
+    jq <- nixBuildTool system "jq" "bin"
 
     buildResults <-
       for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
@@ -190,7 +193,7 @@ compileHaskell files verbosity = do
         return n'
 
       buildResult <-
-        tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils system )
+        tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils jq system )
 
       case buildResult of
         Left e -> do
@@ -277,9 +280,10 @@ nixBuildHaskell
   -> Int
   -> Turtle.Text
   -> Turtle.Text
+  -> Turtle.Text
   -> String
   -> m Turtle.Text
-nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils system = liftIO do
+nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils jq system = liftIO do
   canonicalSrcPath <-
     canonicalizePath srcFile
 
@@ -288,7 +292,9 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
   Just ghcLibDir <-
     Turtle.need "NIX_GHC_LIBDIR"
 
-  Just dataFiles <- fmap ( fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
+  dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
+
+  pathDirs <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_PATH" )
 
   Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
 
@@ -302,13 +308,13 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "--argstr", "ghc", ghcPath
             , "--arg", "hs-path", fromString canonicalSrcPath
             , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
+            , "--arg", "PATH", "[" <> Data.Text.intercalate " " ( [ coreutils, jq ] ++ pathDirs ) <> "]"
             , "--argstr", "moduleName", fromString moduleName
-            , "--argstr", "args", Data.Text.intercalate " " ( map fromString ghcOptions )
+            , "--arg", "args", "[" <> Data.Text.intercalate " " ( map ( ( \arg -> "\"" <> arg <> "\"" ) . fromString ) ghcOptions ) <> "]"
             , "--argstr", "package-db", packageDb
             , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
             , "--argstr", "workingDirectory", fromString workingDirectory
             , "--argstr", "bash", bash
-            , "--argstr", "coreutils", coreutils
             , "--no-link"
             , "--json"
             , "--substituters", ""
@@ -323,8 +329,9 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
 
   Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 json ) )
 
-  return ( nixBuildJSONOutputs Map.! "out" )
+  Just out <- return ( Map.lookup "out" nixBuildJSONOutputs )
 
+  return out
 
 nixMakeContentAddressable :: MonadIO io => Text -> io Text
 nixMakeContentAddressable out = liftIO do

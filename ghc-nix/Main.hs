@@ -17,7 +17,7 @@ import Control.Applicative ( empty )
 import Control.Concurrent.MVar
 import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
-import Control.Monad ( void )
+import Control.Monad ( void , forM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Key as Key
@@ -229,20 +229,12 @@ transitiveDependencies dependencyGraph buildResults hasVisited srcFile = do
     sourceDependencies =
       filter ( `Set.notMember` hasVisited ) ( dependencyGraph Map.! srcFile )
 
-  immediateDependencies <-
-    fmap (Set.fromList . concat) do
-      for sourceDependencies \dep ->
-        case Map.lookup dep buildResults of
-          Nothing ->
-            return []
-
-          Just mvar ->
-            return <$> readMVar mvar
+  immediateDependencies <- forM sourceDependencies \dep -> readMVar ( buildResults Map.! dep )
 
   foldlM ( \( hasVisited', dependencies ) srcFile' -> do
     ( hasVisited'', dependencies' ) <- transitiveDependencies dependencyGraph buildResults hasVisited' srcFile'
-    return ( Set.unions [ Set.singleton srcFile' , hasVisited' , hasVisited'' ] , Set.union dependencies dependencies' )
-    ) ( hasVisited , immediateDependencies ) sourceDependencies
+    return ( Set.union hasVisited' hasVisited'' , Set.union dependencies dependencies' )
+    ) ( Set.union hasVisited ( Set.fromList sourceDependencies ) , Set.fromList immediateDependencies ) sourceDependencies
 
 interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do

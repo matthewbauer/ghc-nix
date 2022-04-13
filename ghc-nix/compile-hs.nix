@@ -37,7 +37,7 @@ let
 
   moduleBaseName="$(basename "$modulePath")"
   moduleBaseDir="$(dirname "$modulePath")"
-  ln -s "$hsPath" "$moduleBaseName.hs"
+  ln -sf "$hsPath" "$moduleBaseName.hs"
   "$ghc" -c "$moduleBaseName.hs" "''${ghcFlags[@]}"
 
   shopt -s nullglob

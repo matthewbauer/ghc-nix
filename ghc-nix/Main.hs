@@ -185,7 +185,7 @@ compileHaskell files verbosity = do
 
     pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
       when (verbosity > 1) do
-        putStrLn ( "Finding dependencies of " <> srcFile <> "..." )
+        putStrLn ( "Finding dependencies of " <> srcFile <> " ..." )
 
       (_, dependencies) <-
         transitiveDependencies dependencyGraph buildResults Set.empty srcFile

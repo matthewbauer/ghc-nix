@@ -17,7 +17,7 @@ import Control.Applicative ( empty )
 import Control.Concurrent.MVar
 import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
-import Control.Monad ( void , forM )
+import Control.Monad ( void , forM, when )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import qualified Data.Aeson.Key as Key
@@ -28,7 +28,7 @@ import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
 import Data.String ( fromString )
 import qualified Data.Text
-import Data.Text ( Text )
+import Data.Text ( Text, unpack )
 import qualified Data.Text.Encoding
 import Data.Traversable ( for )
 import Digraph
@@ -42,7 +42,7 @@ import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
 import qualified Turtle
-import UnliftIO.Async ( pooledForConcurrently_ )
+import UnliftIO.Async ( pooledForConcurrentlyN_ )
 
 
 main :: IO ()
@@ -75,13 +75,14 @@ main = do
         else compileHaskell ( filter ( `notElem` [ "--make" ] ) files ) verbosity
 
 
-data NixBuildJSON = NixBuildJSON { nixBuildJSONOutputs :: Map.Map Text Text }
+data NixBuildJSON = NixBuildJSON { nixBuildJSONDrvPath :: Text, nixBuildJSONOutputs :: Map.Map Text Text }
 
 instance JSON.FromJSON NixBuildJSON where
   parseJSON = JSON.withArray "NixBuildJSON" \arr -> do
     JSON.withObject "NixBuildJSON" ( \o -> do
+      nixBuildJSONDrvPath <- o JSON..: "drvPath"
       nixBuildJSONOutputs <- o JSON..: "outputs"
-      return NixBuildJSON { nixBuildJSONOutputs }
+      return NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs }
       ) ( Vector.head arr )
 
 nixBuildTool :: (MonadIO io, MonadFail io) => String -> Text -> Text -> io Text
@@ -182,9 +183,15 @@ compileHaskell files verbosity = do
 
     numCompiled <- newMVar ( 0 :: Int )
 
-    pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
+    pooledForConcurrentlyN_ 1 topoSortedSrcFiles \srcFile -> do
+      when (verbosity > 1) do
+        putStrLn ( "Finding dependencies of " <> srcFile <> "..." )
+
       (_, dependencies) <-
         transitiveDependencies dependencyGraph buildResults Set.empty srcFile
+
+      when (verbosity > 1) do
+        putStrLn ( "Found " <> show (length dependencies) <> " dependencies of " <> srcFile )
 
       let moduleName = GHC.moduleNameString ( GHC.moduleName ( GHC.ms_mod ( modSummaryMap Map.! srcFile ) ) )
       modifyMVar_ numCompiled \n -> do
@@ -203,7 +210,7 @@ compileHaskell files verbosity = do
 
         Right out -> do
           contentAddressableBuildResult <-
-            nixMakeContentAddressable out
+            nixMakeContentAddressable out verbosity
 
           putMVar
             ( buildResults Map.! srcFile )
@@ -290,6 +297,9 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
     Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
     return packageDb
 
+  when (verbosity > 1) do
+    putStrLn ( "Building " <> srcFile <> " ..." )
+
   Just ( Turtle.lineToText -> json ) <-
     Turtle.fold
       ( Turtle.inproc
@@ -319,14 +329,20 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
       )
       Control.Foldl.head
 
-  Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 json ) )
+  Just ( NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 json ) )
 
   Just out <- return ( Map.lookup "out" nixBuildJSONOutputs )
 
+  when (verbosity > 1) do
+    putStrLn ( "Finished building " <> srcFile <> " ; got derivation " <> unpack nixBuildJSONDrvPath <> " ; got path " <> unpack out )
+
   return out
 
-nixMakeContentAddressable :: MonadIO io => Text -> io Text
-nixMakeContentAddressable out = liftIO do
+nixMakeContentAddressable :: MonadIO io => Text -> Int -> io Text
+nixMakeContentAddressable out verbosity = liftIO do
+  when (verbosity > 1) do
+    putStrLn ( "Making " <> unpack out <> " content addressable..." )
+
   Just ( Turtle.lineToText -> contentAddressableJSON ) <-
     Turtle.fold
       ( Turtle.inproc
@@ -346,7 +362,9 @@ nixMakeContentAddressable out = liftIO do
       case KeyMap.lookup "rewrites" keys of
         Just ( JSON.Object outputs ) ->
           case KeyMap.lookup ( Key.fromText out ) outputs of
-            Just ( JSON.String path ) ->
+            Just ( JSON.String path ) -> do
+              when (verbosity > 1) do
+                putStrLn ( "Finished making " <> unpack out <> " content addressable ; got path: " <> unpack path )
               return path
 
             _ -> do

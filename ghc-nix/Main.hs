@@ -281,14 +281,14 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
 
   workingDirectory <- getWorkingDirectory
 
-  Just ghcLibDir <-
-    Turtle.need "NIX_GHC_LIBDIR"
-
   dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
   pathDirs <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_PATH" )
 
-  Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
+  mGhcLibDir <- Turtle.need "NIX_GHC_LIBDIR"
+  mPackageDb <- forM mGhcLibDir \ghcLibDir -> do
+    Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
+    return packageDb
 
   Just ( Turtle.lineToText -> json ) <-
     Turtle.fold
@@ -299,17 +299,17 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "-f", fromString hsBuilder
             , "--argstr", "ghc", ghcPath
             , "--arg", "hs-path", fromString canonicalSrcPath
-            , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( Set.toList dependencies ) <> "]"
-            , "--arg", "PATH", "[" <> Data.Text.intercalate " " ( [ coreutils, jq ] ++ pathDirs ) <> "]"
+            , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( map ( \dep -> "\"" <> dep <> "\"" ) ( Set.toList dependencies ) ) <> "]"
+            , "--arg", "PATH", "[" <> Data.Text.intercalate " " ( map ( \path -> "\"" <> path <> "\"" ) ( [ coreutils, jq ] ++ pathDirs ) ) <> "]"
             , "--argstr", "moduleName", fromString moduleName
             , "--arg", "args", "[" <> Data.Text.intercalate " " ( map ( ( \arg -> "\"" <> arg <> "\"" ) . fromString ) ghcOptions ) <> "]"
-            , "--argstr", "package-db", packageDb
+            , "--arg", "package-db", maybe "null" (\packageDb -> "\"" <> packageDb <> "\"") mPackageDb
             , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
             , "--argstr", "workingDirectory", fromString workingDirectory
             , "--argstr", "bash", bash
             , "--no-link"
             , "--json"
-            , "--substituters", ""
+            , "--offline"
             , "--builders", ""
             , "--pure-eval"
             , "--argstr", "system", fromString system

@@ -14,8 +14,13 @@
 let
   # from <nixpkgs/lib>
   concatMapStringsSep = sep: f: list: builtins.concatStringsSep sep (map f list);
+  hasPrefix = pref: str: builtins.substring 0 (builtins.stringLength pref) str == pref;
 
   modulePath = builtins.replaceStrings ["."] ["/"] moduleName;
+
+  # We want the path to be in the Nix store. If starts with /nix/store
+  # we can use it directly.
+  toNixStore = path: if hasPrefix "/nix/store" path then builtins.storePath path else /. + path;
 in derivation {
   name = moduleName;
   builder = "${builtins.storePath bash}/bin/bash";
@@ -24,12 +29,12 @@ in derivation {
   preferLocalBuild = true;
   inherit system;
 
-  PATH = concatMapStringsSep ":" (dir: "${builtins.storePath dir}/bin") PATH;
+  PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") PATH;
 
-  ghc = builtins.storePath ghc;
-  ghcFlags = [ "-package-db" (builtins.storePath package-db) ]
+  ghc = toNixStore ghc;
+  ghcFlags = (if package-db != null then [ "-package-db" (toNixStore package-db) ] else [])
     ++ args
-    ++ map (dep: "-i${dep}") dependencies;
+    ++ map (dep: "-i${toNixStore dep}") dependencies;
   hs_path = hs-path;
   moduleBaseName = baseNameOf modulePath;
   moduleBaseDir = dirOf modulePath;

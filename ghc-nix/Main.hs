@@ -321,7 +321,6 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "--json"
             , "--offline"
             , "--builders", ""
-            , "--pure-eval"
             , "-L"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty

@@ -50,10 +50,15 @@ let
   ''
   source "$NIX_ATTRS_SH_FILE"
 
-  jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE" | while read -r source && read -r target; do
+  while read -r source && read -r target; do
     mkdir -p "$(dirname "$target")"
-    ln -sfn "$source" "$target"
-  done
+    if [ -d "$source" ]; then
+      cp -Rsf "$source" "$target"
+      chmod -R u+w "$target"
+    else
+      ln -sf "$source" "$target"
+    fi
+  done < <(jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE")
 
   hsRelDir="$(dirname "$hsRelPath")"
   mkdir -p "$hsRelDir"
@@ -85,7 +90,12 @@ in derivation {
   }) dataFiles;
 
   shellHook = ''
-    buildPhase() { bash -e ${build} }
+    buildPhase() {
+      tmpdir="$(mktemp -d)";
+      trap 'rm -Rf "$tmpdir"' EXIT;
+      cd "$tmpdir";
+      PS4='+ $EPOCHREALTIME ($LINENO)' bash -xe ${build}
+    }
   '';
 
   args = [ "-e" build ];

@@ -218,7 +218,7 @@ compileHaskell files verbosity = do
 
     traverse readMVar buildResults
 
-  DynFlags{ objectDir, hiDir } <-
+  DynFlags{ objectDir, hiDir, hieDir } <-
     GHC.getSessionDynFlags
 
   for_ objectDir \dir ->
@@ -226,6 +226,9 @@ compileHaskell files verbosity = do
 
   for_ hiDir \dir ->
     rsyncFiles [ ".hi", ".dyn_hi" ] outputs dir
+
+  for_ hieDir \dir ->
+    rsyncFiles [ ".hie" ] outputs dir
 
 
 transitiveDependencies

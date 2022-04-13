@@ -283,7 +283,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
 
   dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
-  pathDirs <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_PATH" )
+  nativeBuildInputs <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
 
   mGhcLibDir <- Turtle.need "NIX_GHC_LIBDIR"
   mPackageDb <- forM mGhcLibDir \ghcLibDir -> do
@@ -298,21 +298,21 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "build"
             , "-f", fromString hsBuilder
             , "--argstr", "ghc", ghcPath
-            , "--arg", "hs-path", fromString canonicalSrcPath
+            , "--arg", "hsPath", fromString canonicalSrcPath
             , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( map ( \dep -> "\"" <> dep <> "\"" ) ( Set.toList dependencies ) ) <> "]"
-            , "--arg", "PATH", "[" <> Data.Text.intercalate " " ( map ( \path -> "\"" <> path <> "\"" ) ( [ coreutils, jq ] ++ pathDirs ) ) <> "]"
+            , "--arg", "nativeBuildInputs", "[" <> Data.Text.intercalate " " ( map ( \path -> "\"" <> path <> "\"" ) ( [ coreutils, jq ] ++ nativeBuildInputs ) ) <> "]"
             , "--argstr", "moduleName", fromString moduleName
-            , "--arg", "args", "[" <> Data.Text.intercalate " " ( map ( ( \arg -> "\"" <> arg <> "\"" ) . fromString ) ghcOptions ) <> "]"
-            , "--arg", "package-db", maybe "null" (\packageDb -> "\"" <> packageDb <> "\"") mPackageDb
+            , "--arg", "ghcFlags", "[" <> Data.Text.intercalate " " ( map ( ( \arg -> "\"" <> arg <> "\"" ) . fromString ) ghcOptions ) <> "]"
+            , "--arg", "packageDb", maybe "null" (\packageDb -> "\"" <> packageDb <> "\"") mPackageDb
             , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
             , "--argstr", "workingDirectory", fromString workingDirectory
             , "--argstr", "bash", bash
+            , "--argstr", "system", fromString system
             , "--no-link"
             , "--json"
             , "--offline"
             , "--builders", ""
             , "--pure-eval"
-            , "--argstr", "system", fromString system
             , "-L"
             ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
           empty

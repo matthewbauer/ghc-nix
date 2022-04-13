@@ -1,14 +1,14 @@
 { ghc
-, hs-path
-, dependencies
+, hsPath
+, dependencies ? []
 , moduleName
-, args
-, package-db
-, workingDirectory
-, dataFiles
-, system
+, ghcFlags ? []
+, packageDb ? null
+, dataFiles ? []
+, system ? builtins.currentSystem
 , bash
-, PATH
+, nativeBuildInputs ? []
+, workingDirectory ? null
 }:
 
 let
@@ -20,24 +20,26 @@ let
 
   # We want the path to be in the Nix store. If starts with /nix/store
   # we can use it directly.
-  toNixStore = path: if hasPrefix "/nix/store" path then builtins.storePath path else /. + path;
+  toNixStore = path:
+    if builtins.isPath path then path
+    else if builtins.isString path && hasPrefix "/nix/store" path then builtins.storePath path
+    else if builtins.isString path then /. + path
+    else throw "Invalid type for ${path}: ${builtins.typeOf path}.";
 in derivation {
   name = moduleName;
   builder = "${builtins.storePath bash}/bin/bash";
   outputs = [ "out" ];
   __structuredAttrs = true;
   preferLocalBuild = true;
-  inherit system;
 
-  PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") PATH;
+  inherit hsPath modulePath system;
+
+  PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") nativeBuildInputs;
 
   ghc = toNixStore ghc;
-  ghcFlags = (if package-db != null then [ "-package-db" (toNixStore package-db) ] else [])
-    ++ args
+  ghcFlags = (if packageDb != null then [ "-package-db" (toNixStore packageDb) ] else [])
+    ++ ghcFlags
     ++ map (dep: "-i${toNixStore dep}") dependencies;
-  hs_path = hs-path;
-  moduleBaseName = baseNameOf modulePath;
-  moduleBaseDir = dirOf modulePath;
   dataFiles = map (dataFile: {
     source = /. + (workingDirectory + "/" + dataFile);
     target = dataFile;
@@ -52,7 +54,9 @@ in derivation {
     ln -s "$source" "$target"
   done
 
-  ln -s "$hs_path" "$moduleBaseName.hs"
+  moduleBaseName="$(basename "$modulePath")"
+  moduleBaseDir="$(dirname "$modulePath")"
+  ln -s "$hsPath" "$moduleBaseName.hs"
   "$ghc" -c "$moduleBaseName.hs" "''${ghcFlags[@]}"
 
   shopt -s nullglob

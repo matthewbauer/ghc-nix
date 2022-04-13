@@ -8,7 +8,6 @@ module Main ( main ) where
 
 import Paths_ghc_nix ( getDataFileName )
 
-import System.Directory ( canonicalizePath )
 import System.Posix.Directory ( getWorkingDirectory )
 import System.Info ( os, arch)
 import Data.List ( (\\) )
@@ -286,9 +285,6 @@ nixBuildHaskell
   -> String
   -> m Turtle.Text
 nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils jq system = liftIO do
-  canonicalSrcPath <-
-    canonicalizePath srcFile
-
   workingDirectory <- getWorkingDirectory
 
   dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
@@ -311,7 +307,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
             , "build"
             , "-f", fromString hsBuilder
             , "--argstr", "ghc", ghcPath
-            , "--arg", "hsPath", fromString canonicalSrcPath
+            , "--argstr", "hsPath", fromString srcFile
             , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( map ( \dep -> "\"" <> dep <> "\"" ) ( Set.toList dependencies ) ) <> "]"
             , "--arg", "nativeBuildInputs", "[" <> Data.Text.intercalate " " ( map ( \path -> "\"" <> path <> "\"" ) ( [ coreutils, jq ] ++ nativeBuildInputs ) ) <> "]"
             , "--argstr", "moduleName", fromString moduleName

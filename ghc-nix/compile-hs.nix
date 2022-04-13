@@ -16,7 +16,27 @@ let
   concatMapStringsSep = sep: f: list: builtins.concatStringsSep sep (map f list);
   hasPrefix = pref: str: builtins.substring 0 (builtins.stringLength pref) str == pref;
 
-  modulePath = builtins.replaceStrings ["."] ["/"] moduleName;
+  moduleBasePath = builtins.replaceStrings ["."] ["/"] moduleName;
+  moduleBaseDir = dirOf moduleBasePath;
+
+  # check if a string begins with /, without converting it to a path yet
+  isAbsolute = path: hasPrefix "/" path;
+
+  # create nix path from a relative path
+  relPath = file:
+    if isAbsolute file then /. + file
+    else if workingDirectory == null then ./. + ("/" + file)
+    else if builtins.isPath workingDirectory then workingDirectory + ("/" + file)
+    else if builtins.isString workingDirectory && isAbsolute workingDirectory then /. + (workingDirectory + "/" + file)
+    else if builtins.isString workingDirectory then ./. + ("/" + workingDirectory + "/" file)
+    else throw "Invalid type for workingDirectory (${workingDirectory}): ${builtins.typeOf workingDirectory}.";
+  hsNixPath =
+    if builtins.isPath hsPath then hsPath
+    else if builtins.isString hsPath then relPath hsPath
+    else throw "Invalid type for hsPath (${hsPath}): ${builtins.typeOf hsPath}.";
+  hsRelPath =
+    if builtins.isString hsPath && !(isAbsolute hsPath) then hsPath
+    else "${moduleBasePath}.hs";
 
   # We want the path to be in the Nix store. If starts with /nix/store
   # we can use it directly.
@@ -24,7 +44,7 @@ let
     if builtins.isPath path then path
     else if builtins.isString path && hasPrefix builtins.storeDir path then builtins.storePath path
     else if builtins.isString path then /. + path
-    else throw "Invalid type for ${path}: ${builtins.typeOf path}.";
+    else throw "Invalid type for path (${path}): ${builtins.typeOf path}.";
 
   build = builtins.toFile "builder.sh"
   ''
@@ -35,14 +55,14 @@ let
     ln -sfn "$source" "$target"
   done
 
-  moduleBaseName="$(basename "$modulePath")"
-  moduleBaseDir="$(dirname "$modulePath")"
-  ln -sf "$hsPath" "$moduleBaseName.hs"
-  "$ghc" -c "$moduleBaseName.hs" "''${ghcFlags[@]}"
+  hsRelDir="$(dirname "$hsRelPath")"
+  mkdir -p "$hsRelDir"
+  ln -sf "$hsNixPath" "$hsRelPath"
+  "$ghc" -c "$hsRelPath" "''${ghcFlags[@]}"
 
   shopt -s nullglob
   mkdir -p "''${outputs[out]}/$moduleBaseDir"
-  mv ./*.o ./*.hi ./*.hie ./*.dyn_o ./*.dyn_hi ./*.p_o "''${outputs[out]}/$moduleBaseDir"
+  mv $hsRelDir/*.o $hsRelDir/*.hi $hsRelDir/*.hie $hsRelDir/*.dyn_o $hsRelDir/*.dyn_hi $hsRelDir/*.p_o "''${outputs[out]}/$moduleBaseDir"
   '';
 in derivation {
   name = moduleName;
@@ -51,7 +71,7 @@ in derivation {
   __structuredAttrs = true;
   preferLocalBuild = true;
 
-  inherit hsPath modulePath system;
+  inherit hsRelPath hsNixPath moduleBaseDir system;
 
   PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") nativeBuildInputs;
 
@@ -60,7 +80,7 @@ in derivation {
     ++ ghcFlags
     ++ map (dep: "-i${toNixStore dep}") dependencies;
   dataFiles = map (dataFile: {
-    source = /. + (workingDirectory + "/" + dataFile);
+    source = relPath dataFile;
     target = dataFile;
   }) dataFiles;
 

@@ -22,9 +22,28 @@ let
   # we can use it directly.
   toNixStore = path:
     if builtins.isPath path then path
-    else if builtins.isString path && hasPrefix "/nix/store" path then builtins.storePath path
+    else if builtins.isString path && hasPrefix builtins.storeDir path then builtins.storePath path
     else if builtins.isString path then /. + path
     else throw "Invalid type for ${path}: ${builtins.typeOf path}.";
+
+  build = builtins.toFile "builder.sh"
+  ''
+  source "$NIX_ATTRS_SH_FILE"
+
+  jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE" | while read -r source && read -r target; do
+    mkdir -p "$(dirname "$target")"
+    ln -sfn "$source" "$target"
+  done
+
+  moduleBaseName="$(basename "$modulePath")"
+  moduleBaseDir="$(dirname "$modulePath")"
+  ln -s "$hsPath" "$moduleBaseName.hs"
+  "$ghc" -c "$moduleBaseName.hs" "''${ghcFlags[@]}"
+
+  shopt -s nullglob
+  mkdir -p "''${outputs[out]}/$moduleBaseDir"
+  mv ./*.o ./*.hi ./*.hie ./*.dyn_o ./*.dyn_hi ./*.p_o "''${outputs[out]}/$moduleBaseDir"
+  '';
 in derivation {
   name = moduleName;
   builder = "${builtins.storePath bash}/bin/bash";
@@ -32,7 +51,7 @@ in derivation {
   __structuredAttrs = true;
   preferLocalBuild = true;
 
-  inherit hsPath modulePath system;
+  inherit hsPath modulePath system build;
 
   PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") nativeBuildInputs;
 
@@ -45,22 +64,9 @@ in derivation {
     target = dataFile;
   }) dataFiles;
 
-  args = [ "-e" (builtins.toFile "builder.sh"
-  ''
-  source "$NIX_ATTRS_SH_FILE"
+  shellHook = ''
+    buildPhase() { bash -e ${build} }
+  '';
 
-  jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE" | while read -r source && read -r target; do
-    mkdir -p "$(dirname "$target")"
-    ln -s "$source" "$target"
-  done
-
-  moduleBaseName="$(basename "$modulePath")"
-  moduleBaseDir="$(dirname "$modulePath")"
-  ln -s "$hsPath" "$moduleBaseName.hs"
-  "$ghc" -c "$moduleBaseName.hs" "''${ghcFlags[@]}"
-
-  shopt -s nullglob
-  mkdir -p "''${outputs[out]}/$moduleBaseDir"
-  mv ./*.o ./*.hi ./*.hie ./*.dyn_o ./*.dyn_hi ./*.p_o "''${outputs[out]}/$moduleBaseDir"
-  '') ];
+  args = [ "-e" build ];
 }

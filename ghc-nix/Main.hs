@@ -42,7 +42,7 @@ import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
 import qualified Turtle
-import UnliftIO.Async ( pooledForConcurrentlyN_ )
+import UnliftIO.Async ( pooledForConcurrently_ )
 
 
 main :: IO ()
@@ -183,7 +183,7 @@ compileHaskell files verbosity = do
 
     numCompiled <- newMVar ( 0 :: Int )
 
-    pooledForConcurrentlyN_ 1 topoSortedSrcFiles \srcFile -> do
+    pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
       when (verbosity > 1) do
         putStrLn ( "Finding dependencies of " <> srcFile <> "..." )
 

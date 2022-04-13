@@ -51,7 +51,7 @@ in derivation {
   __structuredAttrs = true;
   preferLocalBuild = true;
 
-  inherit hsPath modulePath system build;
+  inherit hsPath modulePath system;
 
   PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") nativeBuildInputs;
 

@@ -395,6 +395,7 @@ relayedArguments ( "--make" : args ) = relayedArguments args
 relayedArguments ( "-outputdir" : _ : args ) = relayedArguments args
 relayedArguments ( "-odir" : _ : args ) = relayedArguments args
 relayedArguments ( "-hidir" : _ : args ) = relayedArguments args
+relayedArguments ( "-hiedir" : _ : args ) = relayedArguments args
 relayedArguments ( "-stubdir" : _ : args ) = relayedArguments args
 relayedArguments ( "-package-db" : _ : args ) = relayedArguments args -- TODO We do want to relay this!
 relayedArguments ( ( '-' : 'o' : 'p' : 't' : 'P' : _ ) : args ) = relayedArguments args -- TODO We do want to relay this!

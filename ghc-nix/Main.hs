@@ -213,12 +213,9 @@ compileHaskell files verbosity = do
           throwIO e
 
         Right out -> do
-          contentAddressableBuildResult <-
-            nixMakeContentAddressable out verbosity
-
           putMVar
             ( buildResults Map.! srcFile )
-            contentAddressableBuildResult
+            out
 
     traverse readMVar buildResults
 
@@ -340,46 +337,6 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
     putStrLn ( "Finished building " <> srcFile <> " ; got derivation " <> unpack nixBuildJSONDrvPath <> " ; got path " <> unpack out )
 
   return out
-
-nixMakeContentAddressable :: MonadIO io => Text -> Int -> io Text
-nixMakeContentAddressable out verbosity = liftIO do
-  when (verbosity > 1) do
-    putStrLn ( "Making " <> unpack out <> " content addressable..." )
-
-  Just ( Turtle.lineToText -> contentAddressableJSON ) <-
-    Turtle.fold
-      ( Turtle.inproc
-          "nix"
-          [ "--extra-experimental-features", "nix-command"
-          , "store"
-          , "make-content-addressable"
-          , "--json"
-          , out
-          ]
-          empty
-      )
-      Control.Foldl.head
-
-  case JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 contentAddressableJSON ) of
-    Just ( JSON.Object keys ) ->
-      case KeyMap.lookup "rewrites" keys of
-        Just ( JSON.Object outputs ) ->
-          case KeyMap.lookup ( Key.fromText out ) outputs of
-            Just ( JSON.String path ) -> do
-              when (verbosity > 1) do
-                putStrLn ( "Finished making " <> unpack out <> " content addressable ; got path: " <> unpack path )
-              return path
-
-            _ -> do
-              print contentAddressableJSON
-
-              fail "Could not find path in CA result"
-
-        _ ->
-          fail "Could not find `rewrites`"
-
-    _ ->
-      fail "Unexpected JSON structure"
 
 
 rsyncFiles

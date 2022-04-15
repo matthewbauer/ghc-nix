@@ -20,8 +20,8 @@ import qualified Control.Foldl
 import Control.Monad ( void , forM, when )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KeyMap
+import qualified Data.Aeson.Text as JSON
+import Data.Aeson ((.:), (.=))
 import Data.Foldable
 import qualified Data.Map.Strict as Map
 import qualified Data.Maybe as Maybe
@@ -29,7 +29,8 @@ import qualified Data.Set as Set
 import Data.String ( fromString )
 import qualified Data.Text
 import Data.Text ( Text, unpack )
-import qualified Data.Text.Encoding
+import qualified Data.Text.Encoding as TE
+import qualified Data.Text.Lazy as LT
 import Data.Traversable ( for )
 import qualified GHC as GHC
 import GHC ( Ghc )
@@ -80,8 +81,8 @@ data NixBuildJSON = NixBuildJSON { nixBuildJSONDrvPath :: Text, nixBuildJSONOutp
 instance JSON.FromJSON NixBuildJSON where
   parseJSON = JSON.withArray "NixBuildJSON" \arr -> do
     JSON.withObject "NixBuildJSON" ( \o -> do
-      nixBuildJSONDrvPath <- o JSON..: "drvPath"
-      nixBuildJSONOutputs <- o JSON..: "outputs"
+      nixBuildJSONDrvPath <- o .: "drvPath"
+      nixBuildJSONOutputs <- o .: "outputs"
       return NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs }
       ) ( Vector.head arr )
 
@@ -102,7 +103,7 @@ nixBuildTool system name output = do
       )
       Control.Foldl.head
 
-  Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 bashJSON ) )
+  Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( TE.encodeUtf8 bashJSON ) )
 
   Just out <- return ( Map.lookup output nixBuildJSONOutputs )
 
@@ -286,12 +287,13 @@ nixBuildHaskell
   -> Turtle.Text
   -> String
   -> m Turtle.Text
-nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils jq system = liftIO do
+nixBuildHaskell ghcPath ghcOptions hsBuilder hsPath dependencies moduleName verbosity bash coreutils jq system = liftIO do
   workingDirectory <- getWorkingDirectory
 
   dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
-  nativeBuildInputs <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
+  nativeBuildInputs' <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
+  let nativeBuildInputs = [ coreutils, jq ] ++ nativeBuildInputs'
 
   mGhcLibDir <- Turtle.need "NIX_GHC_LIBDIR"
   mPackageDb <- forM mGhcLibDir \ghcLibDir -> do
@@ -299,7 +301,20 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
     return packageDb
 
   when (verbosity > 1) do
-    putStrLn ( "Building " <> srcFile <> " ..." )
+    putStrLn ( "Building " <> hsPath <> " ..." )
+
+  let jsonArgs = JSON.object
+                   [ "ghcPath" .= ghcPath
+                   , "hsPath" .= hsPath
+                   , "dependencies" .= dependencies
+                   , "nativeBuildInputs" .= nativeBuildInputs
+                   , "moduleName" .= moduleName
+                   , "ghcOptions" .= ghcOptions
+                   , "packageDb" .= mPackageDb
+                   , "dataFiles" .= dataFiles
+                   , "workingDirectory" .= workingDirectory
+                   , "bash" .= bash
+                   , "system" .= system ]
 
   Just ( Turtle.lineToText -> json ) <-
     Turtle.fold
@@ -308,17 +323,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
           ( [ "--extra-experimental-features", "nix-command"
             , "build"
             , "-f", fromString hsBuilder
-            , "--argstr", "ghc", ghcPath
-            , "--argstr", "hsPath", fromString srcFile
-            , "--arg", "dependencies", "[" <> Data.Text.intercalate " " ( map ( \dep -> "\"" <> dep <> "\"" ) ( Set.toList dependencies ) ) <> "]"
-            , "--arg", "nativeBuildInputs", "[" <> Data.Text.intercalate " " ( map ( \path -> "\"" <> path <> "\"" ) ( [ coreutils, jq ] ++ nativeBuildInputs ) ) <> "]"
-            , "--argstr", "moduleName", fromString moduleName
-            , "--arg", "ghcFlags", "[" <> Data.Text.intercalate " " ( map ( ( \arg -> "\"" <> arg <> "\"" ) . fromString ) ghcOptions ) <> "]"
-            , "--arg", "packageDb", maybe "null" (\packageDb -> "\"" <> packageDb <> "\"") mPackageDb
-            , "--arg", "dataFiles", "[" <> Data.Text.intercalate " " ( map ( \dataFile -> "\"" <> dataFile <> "\"" ) dataFiles ) <> "]"
-            , "--argstr", "workingDirectory", fromString workingDirectory
-            , "--argstr", "bash", bash
-            , "--argstr", "system", fromString system
+            , "--argstr", "jsonArgs", LT.toStrict ( JSON.encodeToLazyText jsonArgs )
             , "--no-link"
             , "--json"
             , "--offline"
@@ -329,12 +334,12 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName ver
       )
       Control.Foldl.head
 
-  Just ( NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( Data.Text.Encoding.encodeUtf8 json ) )
+  Just ( NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( TE.encodeUtf8 json ) )
 
   Just out <- return ( Map.lookup "out" nixBuildJSONOutputs )
 
   when (verbosity > 1) do
-    putStrLn ( "Finished building " <> srcFile <> " ; got derivation " <> unpack nixBuildJSONDrvPath <> " ; got path " <> unpack out )
+    putStrLn ( "Finished building " <> hsPath <> " ; got derivation " <> unpack nixBuildJSONDrvPath <> " ; got path " <> unpack out )
 
   return out
 

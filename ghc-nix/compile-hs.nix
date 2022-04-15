@@ -1,17 +1,10 @@
-{ ghc
-, hsPath
-, dependencies ? []
-, moduleName
-, ghcFlags ? []
-, packageDb ? null
-, dataFiles ? []
-, system ? builtins.currentSystem
-, bash
-, nativeBuildInputs ? []
-, workingDirectory ? null
-}:
+{ jsonArgs }:
 
 let
+  args = builtins.fromJSON jsonArgs;
+
+  inherit (args) hsPath moduleName workingDirectory;
+
   # from <nixpkgs/lib>
   concatMapStringsSep = sep: f: list: builtins.concatStringsSep sep (map f list);
   hasPrefix = pref: str: builtins.substring 0 (builtins.stringLength pref) str == pref;
@@ -63,7 +56,7 @@ let
   hsRelDir="$(dirname "$hsRelPath")"
   mkdir -p "$hsRelDir"
   ln -sf "$hsNixPath" "$hsRelPath"
-  "$ghc" -c "$hsRelPath" "''${ghcFlags[@]}"
+  "$ghcPath" -c "$hsRelPath" "''${ghcOptions[@]}"
 
   shopt -s nullglob
   mkdir -p "''${outputs[out]}/$moduleBaseDir"
@@ -71,23 +64,25 @@ let
   '';
 in derivation {
   name = moduleName;
-  builder = "${builtins.storePath bash}/bin/bash";
+  builder = "${builtins.storePath args.bash}/bin/bash";
   outputs = [ "out" ];
   __structuredAttrs = true;
   preferLocalBuild = true;
 
-  inherit hsRelPath hsNixPath moduleBaseDir system;
+  inherit hsRelPath hsNixPath moduleBaseDir;
 
-  PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") nativeBuildInputs;
+  inherit (args) system;
 
-  ghc = toNixStore ghc;
-  ghcFlags = (if packageDb != null then [ "-package-db" (toNixStore packageDb) ] else [])
-    ++ ghcFlags
-    ++ map (dep: "-i${toNixStore dep}") dependencies;
+  PATH = concatMapStringsSep ":" (dir: "${toNixStore dir}/bin") args.nativeBuildInputs;
+
+  ghcPath = toNixStore args.ghcPath;
+  ghcOptions = (if args ? packageDb then [ "-package-db" (toNixStore args.packageDb) ] else [])
+    ++ args.ghcOptions
+    ++ map (dep: "-i${toNixStore dep}") args.dependencies;
   dataFiles = map (dataFile: {
     source = relPath dataFile;
     target = dataFile;
-  }) dataFiles;
+  }) args.dataFiles;
 
   shellHook = ''
     buildPhase() {

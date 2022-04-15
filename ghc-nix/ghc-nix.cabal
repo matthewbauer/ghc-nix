@@ -21,12 +21,12 @@ executable ghc-nix
   build-depends:
       aeson >= 2
     , async ^>= 2.2.2
-    , base >=4.12 && <4.15
+    , base >=4.12 && < 4.17
     , containers ^>= 0.6.0.1
     , directory
     , foldl ^>= 1.4.5
     , ghc-paths ^>= 0.1.0.12
-    , ghc >= 8.6.5, ghc < 9
+    , ghc >= 9.2, ghc < 9.4
     , text
     , turtle
     , unordered-containers

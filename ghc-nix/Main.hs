@@ -10,6 +10,7 @@ import Paths_ghc_nix ( getDataFileName )
 
 import System.Posix.Directory ( getWorkingDirectory )
 import System.Info ( os, arch)
+import Data.Graph ( SCC (..) )
 import Data.List ( (\\) )
 import qualified Data.Vector as Vector
 import Control.Applicative ( empty )
@@ -30,13 +31,13 @@ import qualified Data.Text
 import Data.Text ( Text, unpack )
 import qualified Data.Text.Encoding
 import Data.Traversable ( for )
-import Digraph
-import DynFlags
-import Finder
 import qualified GHC as GHC
 import GHC ( Ghc )
-import GHC.Paths ( libdir )
-import HscTypes
+import qualified GHC.Driver.Session as GHC
+import qualified GHC.Paths as GHC
+import qualified GHC.Unit.Finder as GHC
+import qualified GHC.Unit.Module.Graph as GHC
+import qualified GHC.Unit.Module.ModSummary as GHC
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
@@ -65,7 +66,7 @@ main = do
     "--print-libdir" : _ ->
       proxyToGHC
 
-    _ -> GHC.runGhc ( Just libdir ) do
+    _ -> GHC.runGhc ( Just GHC.libdir ) do
       ( files, verbosity ) <-
         interpretCommandLine
 
@@ -130,7 +131,7 @@ compileHaskell files verbosity = do
   let
     modSummaryMap = Map.fromList do
       ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } <-
-        mgModSummaries moduleGraph
+        GHC.mgModSummaries moduleGraph
 
       return ( srcFile, ms )
 
@@ -142,17 +143,18 @@ compileHaskell files verbosity = do
       GHC.topSortModuleGraph False moduleGraph Nothing
 
     topoSortedSrcFiles = flip Maybe.mapMaybe stronglyConnectedComponents \case
-      AcyclicSCC GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = srcFile } } -> srcFile
+      AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = srcFile } } } ) ) -> srcFile
+      AcyclicSCC ( GHC.InstantiationNode _ ) -> Nothing
       CyclicSCC{} -> Nothing
 
   dependencyGraph <-
     fmap ( Map.unionsWith mappend ) do
       for stronglyConnectedComponents \case
-        AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } -> do
+        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } } ) ) -> do
           dependencies <-
-            for ( ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
-              findImportedModule hsc_env moduleName package >>= \case
-                Found GHC.ModLocation{ GHC.ml_hs_file = Just hsFile } _ ->
+            for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
+              GHC.findImportedModule hsc_env moduleName package >>= \case
+                GHC.Found GHC.ModLocation{ GHC.ml_hs_file = Just hsFile } _ ->
                   return [ hsFile ]
 
                 _ ->
@@ -160,7 +162,10 @@ compileHaskell files verbosity = do
 
           return ( Map.singleton srcFile ( concat dependencies ) )
 
-        AcyclicSCC GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } ->
+        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } } ) ) ->
+          return mempty
+
+        AcyclicSCC ( GHC.InstantiationNode _ ) ->
           return mempty
 
         CyclicSCC{} ->
@@ -217,7 +222,7 @@ compileHaskell files verbosity = do
 
     traverse readMVar buildResults
 
-  DynFlags{ objectDir, hiDir, hieDir } <-
+  GHC.DynFlags{ GHC.objectDir, GHC.hiDir, GHC.hieDir } <-
     GHC.getSessionDynFlags
 
   for_ objectDir \dir ->
@@ -260,14 +265,14 @@ interpretCommandLine = do
       GHC.getSessionDynFlags
 
     ( newDynFlags, leftOver, _ ) <-
-      parseDynamicFlagsCmdLine initialDynFlags ( map GHC.noLoc commandLineArguments )
+      GHC.parseDynamicFlagsCmdLine initialDynFlags ( map GHC.noLoc commandLineArguments )
 
     return ( newDynFlags, leftOver )
 
   _ <-
     GHC.setSessionDynFlags dynFlags
 
-  return ( map GHC.unLoc files, verbosity dynFlags )
+  return ( map GHC.unLoc files, GHC.verbosity dynFlags )
 
 
 nixBuildHaskell

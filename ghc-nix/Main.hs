@@ -12,25 +12,23 @@ import System.Posix.Directory ( getWorkingDirectory )
 import System.Info ( os, arch)
 import Data.Graph ( SCC (..) )
 import Data.List ( (\\) )
-import qualified Data.Vector as Vector
 import Control.Applicative ( empty )
-import Control.Concurrent.MVar
 import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
 import Control.Monad ( void , forM, when )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
-import qualified Data.Aeson.Text as JSON
 import Data.Aeson ((.:), (.=))
 import Data.Foldable
 import qualified Data.Map.Strict as Map
+import Data.Map.Strict ( Map )
 import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
+import Data.Set ( Set )
 import Data.String ( fromString )
-import qualified Data.Text
-import Data.Text ( Text, unpack )
+import qualified Data.Text as T
+import Data.Text ( Text )
 import qualified Data.Text.Encoding as TE
-import qualified Data.Text.Lazy as LT
 import Data.Traversable ( for )
 import qualified GHC as GHC
 import GHC ( Ghc )
@@ -42,8 +40,9 @@ import qualified GHC.Unit.Module.ModSummary as GHC
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
+import qualified System.IO as IO
+import System.IO.Temp ( getCanonicalTemporaryDirectory, withTempFile )
 import qualified Turtle
-import UnliftIO.Async ( pooledForConcurrently_ )
 
 
 main :: IO ()
@@ -76,15 +75,13 @@ main = do
         else compileHaskell ( filter ( `notElem` [ "--make" ] ) files ) verbosity
 
 
-data NixBuildJSON = NixBuildJSON { nixBuildJSONDrvPath :: Text, nixBuildJSONOutputs :: Map.Map Text Text }
+data NixBuildJSON = NixBuildJSON { nixBuildJSONDrvPath :: Text, nixBuildJSONOutputs :: Map Text Text }
 
 instance JSON.FromJSON NixBuildJSON where
-  parseJSON = JSON.withArray "NixBuildJSON" \arr -> do
-    JSON.withObject "NixBuildJSON" ( \o -> do
-      nixBuildJSONDrvPath <- o .: "drvPath"
-      nixBuildJSONOutputs <- o .: "outputs"
-      return NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs }
-      ) ( Vector.head arr )
+  parseJSON = JSON.withObject "NixBuildJSON" \o -> do
+    nixBuildJSONDrvPath <- o .: "drvPath"
+    nixBuildJSONOutputs <- o .: "outputs"
+    return NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs }
 
 nixBuildTool :: (MonadIO io, MonadFail io) => String -> Text -> Text -> io Text
 nixBuildTool system name output = do
@@ -98,20 +95,23 @@ nixBuildTool system name output = do
             , "--no-link"
             , "--quiet"
             , "--json"
-            ])
+            ] )
           empty
       )
       Control.Foldl.head
 
-  Just ( NixBuildJSON { nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( TE.encodeUtf8 bashJSON ) )
+  Just results <- return ( JSON.decodeStrict ( TE.encodeUtf8 bashJSON ) )
 
-  Just out <- return ( Map.lookup output nixBuildJSONOutputs )
+  Just result <- return ( Maybe.listToMaybe results )
 
-  return out
+  return ( nixBuildJSONOutputs result Map.! output )
 
 
 compileHaskell :: [ FilePath ] -> Int -> Ghc ()
 compileHaskell files verbosity = do
+  when (verbosity > 1) do
+    liftIO ( putStrLn "Starting ghc-nix..." )
+
   ghcOptions <- do
     commandLineArguments <-
       liftIO getArgs
@@ -129,13 +129,6 @@ compileHaskell files verbosity = do
   moduleGraph <-
     GHC.depanal [] True
 
-  let
-    modSummaryMap = Map.fromList do
-      ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } <-
-        GHC.mgModSummaries moduleGraph
-
-      return ( srcFile, ms )
-
   hsc_env <-
     GHC.getSession
 
@@ -143,25 +136,23 @@ compileHaskell files verbosity = do
     stronglyConnectedComponents =
       GHC.topSortModuleGraph False moduleGraph Nothing
 
-    topoSortedSrcFiles = flip Maybe.mapMaybe stronglyConnectedComponents \case
-      AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = srcFile } } } ) ) -> srcFile
-      AcyclicSCC ( GHC.InstantiationNode _ ) -> Nothing
-      CyclicSCC{} -> Nothing
+  when (verbosity > 1) do
+    liftIO ( putStrLn "Finding dependency graph..." )
 
   dependencyGraph <-
     fmap ( Map.unionsWith mappend ) do
       for stronglyConnectedComponents \case
-        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } } ) ) -> do
+        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just _ } } } ) ) -> do
           dependencies <-
             for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
               GHC.findImportedModule hsc_env moduleName package >>= \case
-                GHC.Found GHC.ModLocation{ GHC.ml_hs_file = Just hsFile } _ ->
-                  return [ hsFile ]
+                GHC.Found GHC.ModLocation{ GHC.ml_hs_file = Just _ } _ ->
+                  return [ ( GHC.moduleNameString moduleName ) ]
 
                 _ ->
                   return []
 
-          return ( Map.singleton srcFile ( concat dependencies ) )
+          return ( Map.singleton ( GHC.moduleNameString ( GHC.ms_mod_name ms ) ) ( concat dependencies ) )
 
         AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } } ) ) ->
           return mempty
@@ -172,6 +163,21 @@ compileHaskell files verbosity = do
         CyclicSCC{} ->
           return mempty
 
+  when (verbosity > 1) do
+    liftIO ( putStrLn "Finished finding dependency graph..." )
+
+  let srcFiles =
+         Map.unions do
+           flip fmap stronglyConnectedComponents \case
+             AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } } ) ) ->
+               Map.singleton ( GHC.moduleNameString ( GHC.ms_mod_name ms ) ) srcFile
+
+             AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } } ) ) -> mempty
+
+             AcyclicSCC ( GHC.InstantiationNode _ ) -> mempty
+
+             CyclicSCC{} -> mempty
+
   outputs <- liftIO do
     Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
 
@@ -181,44 +187,16 @@ compileHaskell files verbosity = do
     coreutils <- nixBuildTool system "coreutils" "out"
     jq <- nixBuildTool system "jq" "bin"
 
-    buildResults <-
-      for dependencyGraph \_ -> ( newEmptyMVar :: IO ( MVar Data.Text.Text )  )
+    buildResult <- tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder ( transitiveDependencies dependencyGraph ) srcFiles verbosity bash coreutils jq system )
 
-    let totalModules = length topoSortedSrcFiles
+    case buildResult of
+      Left e -> do
+        putStrLn "Build failed"
 
-    numCompiled <- newMVar ( 0 :: Int )
+        throwIO e
 
-    pooledForConcurrently_ topoSortedSrcFiles \srcFile -> do
-      when (verbosity > 1) do
-        putStrLn ( "Finding dependencies of " <> srcFile <> " ..." )
-
-      (_, dependencies) <-
-        transitiveDependencies dependencyGraph buildResults Set.empty srcFile
-
-      when (verbosity > 1) do
-        putStrLn ( "Found " <> show (length dependencies) <> " dependencies of " <> srcFile )
-
-      let moduleName = GHC.moduleNameString ( GHC.moduleName ( GHC.ms_mod ( modSummaryMap Map.! srcFile ) ) )
-      modifyMVar_ numCompiled \n -> do
-        let n' = n + 1
-        putStrLn ( "[ " <> show n' <> " of " <> show totalModules <> "]  Compiling " <> moduleName <> " ( " <> srcFile <> " )" )
-        return n'
-
-      buildResult <-
-        tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder srcFile dependencies moduleName verbosity bash coreutils jq system )
-
-      case buildResult of
-        Left e -> do
-          putStrLn ( "Build for " <> srcFile <> " failed" )
-
-          throwIO e
-
-        Right out -> do
-          putMVar
-            ( buildResults Map.! srcFile )
-            out
-
-    traverse readMVar buildResults
+      Right out -> do
+        return out
 
   GHC.DynFlags{ GHC.objectDir, GHC.hiDir, GHC.hieDir } <-
     GHC.getSessionDynFlags
@@ -234,19 +212,11 @@ compileHaskell files verbosity = do
 
 
 transitiveDependencies
-  :: ( Ord a, Ord k )
-  => Map.Map k [ k ] -> Map.Map k ( MVar a ) -> Set.Set k -> k -> IO ( Set.Set k, Set.Set a )
-transitiveDependencies dependencyGraph buildResults hasVisited srcFile = do
-  let
-    sourceDependencies =
-      filter ( `Set.notMember` hasVisited ) ( dependencyGraph Map.! srcFile )
-
-  immediateDependencies <- forM sourceDependencies \dep -> readMVar ( buildResults Map.! dep )
-
-  foldlM ( \( hasVisited', dependencies ) srcFile' -> do
-    ( hasVisited'', dependencies' ) <- transitiveDependencies dependencyGraph buildResults hasVisited' srcFile'
-    return ( Set.union hasVisited' hasVisited'' , Set.union dependencies dependencies' )
-    ) ( Set.union hasVisited ( Set.fromList sourceDependencies ) , Set.fromList immediateDependencies ) sourceDependencies
+  :: Map.Map String [ String ] -> Map.Map String (Set String)
+transitiveDependencies dependencyGraph =
+  let dependencyGraph' = flip fmap dependencyGraph \dependencies ->
+        Set.union ( Set.fromList dependencies ) ( Set.unions ( flip fmap dependencies \dependency -> dependencyGraph' Map.! dependency ) )
+  in dependencyGraph'
 
 interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do
@@ -278,21 +248,20 @@ nixBuildHaskell
   => Text
   -> [ String ]
   -> String
-  -> String
-  -> Set.Set Turtle.Text
-  -> String
+  -> Map String (Set String)
+  -> Map String FilePath
   -> Int
-  -> Turtle.Text
-  -> Turtle.Text
-  -> Turtle.Text
+  -> Text
+  -> Text
+  -> Text
   -> String
-  -> m Turtle.Text
-nixBuildHaskell ghcPath ghcOptions hsBuilder hsPath dependencies moduleName verbosity bash coreutils jq system = liftIO do
+  -> m [Text]
+nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity bash coreutils jq system = liftIO do
   workingDirectory <- getWorkingDirectory
 
-  dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
+  dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
-  nativeBuildInputs' <- fmap ( Maybe.fromMaybe [] . fmap ( Data.Text.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
+  nativeBuildInputs' <- fmap ( Maybe.fromMaybe [] . fmap ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
   let nativeBuildInputs = [ coreutils, jq ] ++ nativeBuildInputs'
 
   mGhcLibDir <- Turtle.need "NIX_GHC_LIBDIR"
@@ -301,14 +270,13 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder hsPath dependencies moduleName verb
     return packageDb
 
   when (verbosity > 1) do
-    putStrLn ( "Building " <> hsPath <> " ..." )
+    putStrLn "Building..."
 
   let jsonArgs = JSON.object
                    [ "ghcPath" .= ghcPath
-                   , "hsPath" .= hsPath
-                   , "dependencies" .= dependencies
+                   , "dependencyGraph" .= dependencyGraph
+                   , "srcFiles" .= srcFiles
                    , "nativeBuildInputs" .= nativeBuildInputs
-                   , "moduleName" .= moduleName
                    , "ghcOptions" .= ghcOptions
                    , "packageDb" .= mPackageDb
                    , "dataFiles" .= dataFiles
@@ -316,32 +284,42 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder hsPath dependencies moduleName verb
                    , "bash" .= bash
                    , "system" .= system ]
 
-  Just ( Turtle.lineToText -> json ) <-
-    Turtle.fold
-      ( Turtle.inproc
-          "nix"
-          ( [ "--extra-experimental-features", "nix-command"
-            , "build"
-            , "-f", fromString hsBuilder
-            , "--argstr", "jsonArgs", LT.toStrict ( JSON.encodeToLazyText jsonArgs )
-            , "--no-link"
-            , "--json"
-            , "--offline"
-            , "--builders", ""
-            , "-L"
-            ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
-          empty
-      )
-      Control.Foldl.head
+  tmpdir <- getCanonicalTemporaryDirectory
+  json <- withTempFile tmpdir "ghc-nix-args.json" \tmpFile handle -> do
+    IO.hClose handle
+    when (verbosity > 1) do
+      putStrLn "Writing json..."
+    JSON.encodeFile tmpFile jsonArgs
+    when (verbosity > 1) do
+      putStrLn "Running nix build..."
+    Just ( Turtle.lineToText -> json ) <-
+      Turtle.fold
+        ( Turtle.inproc
+            "nix"
+            ( [ "--extra-experimental-features", "nix-command"
+              , "build"
+              , "-f", fromString hsBuilder
+              , "--argstr", "jsonArgsFile", T.pack tmpFile
+              , "--no-link"
+              , "--json"
+              , "--offline"
+              , "--builders", ""
+              , "-L"
+              ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
+            empty
+        )
+        Control.Foldl.head
+    return json
 
-  Just ( NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs } ) <- return ( JSON.decodeStrict ( TE.encodeUtf8 json ) )
+  when ( verbosity > 1 ) do
+    putStrLn "Decoding json..."
 
-  Just out <- return ( Map.lookup "out" nixBuildJSONOutputs )
+  Just results <- return ( JSON.decodeStrict ( TE.encodeUtf8 json ) )
 
-  when (verbosity > 1) do
-    putStrLn ( "Finished building " <> hsPath <> " ; got derivation " <> unpack nixBuildJSONDrvPath <> " ; got path " <> unpack out )
+  when ( verbosity > 1 ) do
+    putStrLn ( "Finished building " <> show ( length ( Map.keys dependencyGraph ) ) <> " modules" )
 
-  return out
+  return ( flip fmap results ( \result -> nixBuildJSONOutputs result Map.! "out" ) )
 
 
 rsyncFiles

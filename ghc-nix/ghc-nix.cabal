@@ -27,6 +27,7 @@ executable ghc-nix
     , foldl ^>= 1.4.5
     , ghc-paths ^>= 0.1.0.12
     , ghc >= 9.2, ghc < 9.4
+    , temporary
     , text
     , turtle
     , unordered-containers
@@ -34,7 +35,6 @@ executable ghc-nix
     , filepath
     , unix
     , unliftio
-    , vector
   default-language:
     Haskell2010
   ghc-options:

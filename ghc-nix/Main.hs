@@ -11,11 +11,11 @@ import Paths_ghc_nix ( getDataFileName )
 import System.Posix.Directory ( getWorkingDirectory )
 import System.Info ( os, arch)
 import Data.Graph ( SCC (..) )
-import Data.List ( (\\) )
+import Data.List ( (\\) , isSuffixOf , nub, intercalate )
 import Control.Applicative ( empty )
 import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
-import Control.Monad ( void , forM, when )
+import Control.Monad ( void , when , forM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import Data.Aeson ((.:), (.=))
@@ -37,12 +37,17 @@ import qualified GHC.Paths as GHC
 import qualified GHC.Unit.Finder as GHC
 import qualified GHC.Unit.Module.Graph as GHC
 import qualified GHC.Unit.Module.ModSummary as GHC
+import qualified GHC.Unit.Types as GHC
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
 import qualified System.IO as IO
 import System.IO.Temp ( getCanonicalTemporaryDirectory, withTempFile )
 import qualified Turtle
+import qualified Distribution.InstalledPackageInfo as Cabal
+import qualified Distribution.Pretty as Cabal
+import System.Directory ( listDirectory )
+import qualified Data.ByteString as BS
 
 
 main :: IO ()
@@ -112,11 +117,14 @@ compileHaskell files verbosity = do
   when (verbosity > 1) do
     liftIO ( putStrLn "Starting ghc-nix..." )
 
-  ghcOptions <- do
+  ( ghcOptions, packageDbs, mOfile ) <- do
     commandLineArguments <-
       liftIO getArgs
 
-    return ( relayedArguments commandLineArguments \\ files )
+    when (verbosity > 1) do
+      liftIO ( putStrLn ( "Got args: " <> intercalate " " commandLineArguments ) )
+
+    return ( relayedArguments ( commandLineArguments \\ files ) )
 
   hsBuilder <-
     liftIO ( getDataFileName "compile-hs.nix" )
@@ -139,8 +147,8 @@ compileHaskell files verbosity = do
   when (verbosity > 1) do
     liftIO ( putStrLn "Finding dependency graph..." )
 
-  dependencyGraph <-
-    fmap ( Map.unionsWith mappend ) do
+  dependencyGraph' <-
+    fmap concat do
       for stronglyConnectedComponents \case
         AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just _ } } } ) ) -> do
           dependencies <-
@@ -152,7 +160,7 @@ compileHaskell files verbosity = do
                 _ ->
                   return []
 
-          return ( Map.singleton ( GHC.moduleNameString ( GHC.ms_mod_name ms ) ) ( concat dependencies ) )
+          return [ ( GHC.moduleNameString ( GHC.ms_mod_name ms ) , concat dependencies ) ]
 
         AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } } ) ) ->
           return mempty
@@ -162,6 +170,13 @@ compileHaskell files verbosity = do
 
         CyclicSCC{} ->
           return mempty
+
+  let dependencyGraph = Map.fromListWith mappend dependencyGraph'
+
+  let mExeMainModule = -- TODO: this should do the same thing GHC does in this situation
+        if Maybe.isJust mOfile
+        then Just ( if "Main" `Map.member` dependencyGraph then "Main" else fst ( last dependencyGraph' ) )
+        else Nothing
 
   when (verbosity > 1) do
     liftIO ( putStrLn "Finished finding dependency graph..." )
@@ -178,16 +193,46 @@ compileHaskell files verbosity = do
 
              CyclicSCC{} -> mempty
 
+  pkgNames <- fmap Set.unions ( for stronglyConnectedComponents \case
+    AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms } ) ) -> do
+      fmap Set.unions ( for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
+        GHC.findImportedModule hsc_env moduleName package >>= \case
+          GHC.Found _ ( GHC.Module pkgName _ ) ->
+            return ( Set.singleton (GHC.unitString pkgName ) )
+
+          _ -> return Set.empty )
+
+    AcyclicSCC ( GHC.InstantiationNode _ ) -> return Set.empty
+
+    CyclicSCC{} -> return Set.empty )
+
+  pkgConfFiles <- fmap concat ( forM packageDbs \pkgConfDir -> liftIO do
+    pkgConfFiles <- listDirectory pkgConfDir
+    fmap concat ( forM pkgConfFiles \pkgConfFile -> do
+      if ( ".conf" `isSuffixOf` pkgConfFile ) then do
+        pkgConfText <- BS.readFile ( Turtle.encodeString ( Turtle.decodeString pkgConfDir Turtle.</> Turtle.decodeString pkgConfFile ) )
+        case Cabal.parseInstalledPackageInfo pkgConfText of
+          Right ( _, pkgConf ) -> do
+            let pkgName = Cabal.prettyShow ( Cabal.sourcePackageId pkgConf ) <> "-" <> Cabal.prettyShow ( Cabal.abiHash pkgConf )
+            if ( pkgName `Set.member` pkgNames ) then do
+              let importDirs = nub ( Cabal.importDirs pkgConf ++ Cabal.libraryDirs pkgConf ++ Cabal.libraryDynDirs pkgConf )
+              return ( fmap ( \importDir -> ( Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) ) importDirs )
+            else return []
+          Left _ -> return []
+      else return [] ) )
+
   outputs <- liftIO do
     Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
+    Just ghcPkgPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc-pkg" )
 
     let system = arch <> "-" <> os
 
     bash <- nixBuildTool system "bash" "out"
     coreutils <- nixBuildTool system "coreutils" "out"
     jq <- nixBuildTool system "jq" "bin"
+    gnused <- nixBuildTool system "gnused" "out"
 
-    buildResult <- tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder ( transitiveDependencies dependencyGraph ) srcFiles verbosity bash coreutils jq system )
+    buildResult <- tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder ( transitiveDependencies dependencyGraph ) srcFiles verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused mExeMainModule )
 
     case buildResult of
       Left e -> do
@@ -210,9 +255,23 @@ compileHaskell files verbosity = do
   for_ hieDir \dir ->
     rsyncFiles [ ".hie" ] outputs dir
 
+  for_ mOfile \ofile -> do
+    for_ outputs \dir -> do
+      let exePath = Turtle.fromText dir Turtle.</> "exe"
+      exists <- Turtle.testpath exePath
+      when exists do
+        _ <- Turtle.proc
+          "cp"
+          [ "-f"
+          , fromString ( Turtle.encodeString exePath )
+          , fromString ofile
+          ]
+          empty
+        pure ()
+
 
 transitiveDependencies
-  :: Map.Map String [ String ] -> Map.Map String (Set String)
+  :: Map String [ String ] -> Map String (Set String)
 transitiveDependencies dependencyGraph =
   let dependencyGraph' = flip fmap dependencyGraph \dependencies ->
         Set.union ( Set.fromList dependencies ) ( Set.unions ( flip fmap dependencies \dependency -> dependencyGraph' Map.! dependency ) )
@@ -255,34 +314,35 @@ nixBuildHaskell
   -> Text
   -> Text
   -> String
+  -> [ (Map String String) ]
+  -> Text
+  -> Text
+  -> Maybe String
   -> m [Text]
-nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity bash coreutils jq system = liftIO do
+nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused exeModuleName = liftIO do
   workingDirectory <- getWorkingDirectory
 
   dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
   nativeBuildInputs' <- fmap ( Maybe.fromMaybe [] . fmap ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
-  let nativeBuildInputs = [ coreutils, jq ] ++ nativeBuildInputs'
-
-  mGhcLibDir <- Turtle.need "NIX_GHC_LIBDIR"
-  mPackageDb <- forM mGhcLibDir \ghcLibDir -> do
-    Right packageDb <- return ( Turtle.toText ( Turtle.fromText ghcLibDir Turtle.</> "package.conf.d" ) )
-    return packageDb
+  let nativeBuildInputs = [ coreutils, jq, gnused ] ++ nativeBuildInputs'
 
   when (verbosity > 1) do
     putStrLn "Building..."
 
   let jsonArgs = JSON.object
                    [ "ghcPath" .= ghcPath
+                   , "ghcPkgPath" .= ghcPkgPath
                    , "dependencyGraph" .= dependencyGraph
                    , "srcFiles" .= srcFiles
                    , "nativeBuildInputs" .= nativeBuildInputs
                    , "ghcOptions" .= ghcOptions
-                   , "packageDb" .= mPackageDb
+                   , "pkgConfFiles" .= pkgConfFiles
                    , "dataFiles" .= dataFiles
                    , "workingDirectory" .= workingDirectory
                    , "bash" .= bash
-                   , "system" .= system ]
+                   , "system" .= system
+                   , "exeModuleName" .= exeModuleName ]
 
   tmpdir <- getCanonicalTemporaryDirectory
   json <- withTempFile tmpdir "ghc-nix-args.json" \tmpFile handle -> do
@@ -299,7 +359,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
             ( [ "--extra-experimental-features", "nix-command"
               , "build"
               , "-f", fromString hsBuilder
-              , "--argstr", "jsonArgsFile", T.pack tmpFile
+              , "--argstr", "jsonArgsFile", fromString tmpFile
               , "--no-link"
               , "--json"
               , "--offline"
@@ -351,16 +411,20 @@ proxyToGHC = do
   void ( Turtle.proc "ghc" ( map fromString arguments ) empty )
 
 
-relayedArguments :: [ String ] -> [ String ]
+relayedArguments :: [ String ] -> ( [ String ], [ String ] , Maybe String )
 relayedArguments ( "--make" : args ) = relayedArguments args
 relayedArguments ( "-outputdir" : _ : args ) = relayedArguments args
 relayedArguments ( "-odir" : _ : args ) = relayedArguments args
 relayedArguments ( "-hidir" : _ : args ) = relayedArguments args
 relayedArguments ( "-hiedir" : _ : args ) = relayedArguments args
 relayedArguments ( "-stubdir" : _ : args ) = relayedArguments args
-relayedArguments ( "-package-db" : _ : args ) = relayedArguments args -- TODO We do want to relay this!
+relayedArguments ( "-o" : oFile : args ) =
+  (\( args' , packageDbs , _ ) -> ( args' , packageDbs , Just oFile ) ) ( relayedArguments args )
 relayedArguments ( ( '-' : 'o' : 'p' : 't' : 'P' : _ ) : args ) = relayedArguments args -- TODO We do want to relay this!
 relayedArguments ( ( '-' : 'i' : _ ) : args ) = relayedArguments args
 relayedArguments ( ( '-' : 'I' : _ ) : args ) = relayedArguments args
-relayedArguments ( x : args ) = x : relayedArguments args
-relayedArguments [] = []
+relayedArguments ( "-package-db" : packageDb : args ) =
+  (\( args' , packageDbs , output ) -> ( args' , packageDb : packageDbs , output ) ) ( relayedArguments args )
+relayedArguments ( x : args ) =
+  (\( args' , packageDbs , output ) -> ( x : args' , packageDbs , output ) ) ( relayedArguments args )
+relayedArguments [] = ( [] , [] , Nothing )

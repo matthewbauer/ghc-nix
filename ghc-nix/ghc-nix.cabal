@@ -19,9 +19,11 @@ executable ghc-nix
   main-is:
     Main.hs
   build-depends:
-      aeson >= 2
+      Cabal
+    , aeson >= 2
     , async ^>= 2.2.2
     , base >=4.12 && < 4.17
+    , bytestring
     , containers ^>= 0.6.0.1
     , directory
     , foldl ^>= 1.4.5

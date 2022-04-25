@@ -16,7 +16,7 @@ import Data.List ( (\\) , isSuffixOf , nub, intercalate )
 import Control.Applicative ( empty )
 import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
-import Control.Monad ( void , when , forM )
+import Control.Monad ( void , when , forM , filterM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import Data.Aeson ((.:), (.=))
@@ -44,6 +44,7 @@ import qualified Distribution.InstalledPackageInfo as Cabal
 import qualified Distribution.Pretty as Cabal
 import System.Directory ( listDirectory )
 import qualified Data.ByteString as BS
+import System.Posix.Files (fileExist)
 
 #if MIN_VERSION_ghc(9, 0, 0)
 import qualified GHC.Driver.Session as GHC
@@ -228,7 +229,8 @@ compileHaskell files verbosity = do
             let pkgName = Cabal.prettyShow ( Cabal.sourcePackageId pkgConf ) <> "-" <> Cabal.prettyShow ( Cabal.abiHash pkgConf )
             if ( pkgName `Set.member` pkgNames ) then do
               let importDirs = nub ( Cabal.importDirs pkgConf ++ Cabal.libraryDirs pkgConf ++ Cabal.libraryDynDirs pkgConf )
-              return ( fmap ( \importDir -> ( Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) ) importDirs )
+              importDirs' <- filterM fileExist importDirs
+              return ( fmap ( \importDir -> ( Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) ) importDirs' )
             else return []
           Left _ -> return []
       else return [] ) )

@@ -3,6 +3,7 @@
 {-# language NamedFieldPuns #-}
 {-# language OverloadedStrings #-}
 {-# language ViewPatterns #-}
+{-# language CPP #-}
 
 module Main ( main ) where
 
@@ -32,12 +33,7 @@ import qualified Data.Text.Encoding as TE
 import Data.Traversable ( for )
 import qualified GHC as GHC
 import GHC ( Ghc )
-import qualified GHC.Driver.Session as GHC
 import qualified GHC.Paths as GHC
-import qualified GHC.Unit.Finder as GHC
-import qualified GHC.Unit.Module.Graph as GHC
-import qualified GHC.Unit.Module.ModSummary as GHC
-import qualified GHC.Unit.Types as GHC
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
@@ -49,6 +45,18 @@ import qualified Distribution.Pretty as Cabal
 import System.Directory ( listDirectory )
 import qualified Data.ByteString as BS
 
+#if MIN_VERSION_ghc(9, 0, 0)
+import qualified GHC.Driver.Session as GHC
+import qualified GHC.Unit.Finder as GHC
+import qualified GHC.Unit.Module.Graph as GHC
+import qualified GHC.Unit.Module.ModSummary as GHC
+import qualified GHC.Unit.Types as GHC
+#else
+import qualified DynFlags as GHC
+import qualified Finder as GHC
+import qualified HscTypes as GHC
+import qualified Module as GHC
+#endif
 
 main :: IO ()
 main = do
@@ -150,7 +158,11 @@ compileHaskell files verbosity = do
   dependencyGraph' <-
     fmap concat do
       for stronglyConnectedComponents \case
+#if MIN_VERSION_ghc(9, 0, 0)
         AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just _ } } } ) ) -> do
+#else
+        AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just _ } } -> do
+#endif
           dependencies <-
             for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
               GHC.findImportedModule hsc_env moduleName package >>= \case
@@ -162,13 +174,7 @@ compileHaskell files verbosity = do
 
           return [ ( GHC.moduleNameString ( GHC.ms_mod_name ms ) , concat dependencies ) ]
 
-        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } } ) ) ->
-          return mempty
-
-        AcyclicSCC ( GHC.InstantiationNode _ ) ->
-          return mempty
-
-        CyclicSCC{} ->
+        _ ->
           return mempty
 
   let dependencyGraph = Map.fromListWith mappend dependencyGraph'
@@ -184,27 +190,33 @@ compileHaskell files verbosity = do
   let srcFiles =
          Map.unions do
            flip fmap stronglyConnectedComponents \case
+#if MIN_VERSION_ghc(9, 0, 0)
              AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } } ) ) ->
+#else
+             AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } ->
+#endif
                Map.singleton ( GHC.moduleNameString ( GHC.ms_mod_name ms ) ) srcFile
 
-             AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Nothing } } } ) ) -> mempty
-
-             AcyclicSCC ( GHC.InstantiationNode _ ) -> mempty
-
-             CyclicSCC{} -> mempty
+             _ -> mempty
 
   pkgNames <- fmap Set.unions ( for stronglyConnectedComponents \case
+#if MIN_VERSION_ghc(9, 0, 0)
     AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms } ) ) -> do
+#else
+    AcyclicSCC ms ->
+#endif
       fmap Set.unions ( for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
         GHC.findImportedModule hsc_env moduleName package >>= \case
           GHC.Found _ ( GHC.Module pkgName _ ) ->
-            return ( Set.singleton (GHC.unitString pkgName ) )
+#if MIN_VERSION_ghc(9, 0, 0)
+            return ( Set.singleton ( GHC.unitString pkgName ) )
+#else
+            return ( Set.singleton ( GHC.unitIdString pkgName ) )
+#endif
 
           _ -> return Set.empty )
 
-    AcyclicSCC ( GHC.InstantiationNode _ ) -> return Set.empty
-
-    CyclicSCC{} -> return Set.empty )
+    _ -> return Set.empty )
 
   pkgConfFiles <- fmap concat ( forM packageDbs \pkgConfDir -> liftIO do
     pkgConfFiles <- listDirectory pkgConfDir

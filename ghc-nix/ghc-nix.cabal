@@ -28,7 +28,7 @@ executable ghc-nix
     , directory
     , foldl ^>= 1.4.5
     , ghc-paths ^>= 0.1.0.12
-    , ghc >= 9.2, ghc < 9.4
+    , ghc >= 8.10, ghc < 9.4
     , temporary
     , text
     , turtle

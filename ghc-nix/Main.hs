@@ -379,7 +379,8 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
               , "--offline"
               , "--builders", ""
               , "-L"
-              ] ++ [ "--quiet" | verbosity < 2 ] )
+              ] ++ [ "-vvvvv" | verbosity >= 2 ]
+                ++ [ "--quiet" | verbosity < 2 ] )
             empty
         )
         Control.Foldl.head

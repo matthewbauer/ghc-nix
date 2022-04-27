@@ -31,7 +31,7 @@ import qualified Data.Text as T
 import Data.Text ( Text )
 import qualified Data.Text.Encoding as TE
 import Data.Traversable ( for )
-import qualified GHC as GHC
+import qualified GHC
 import GHC ( Ghc )
 import qualified GHC.Paths as GHC
 import System.Environment ( getArgs )
@@ -103,13 +103,13 @@ nixBuildTool system name output = do
     Turtle.fold
       ( Turtle.inproc
           "nix"
-          ( [ "--extra-experimental-features", "nix-command flakes"
-            , "build"
-            , "nixpkgs#legacyPackages." <> fromString system <> "." <> name <> "." <> output
-            , "--no-link"
-            , "--quiet"
-            , "--json"
-            ] )
+          [ "--extra-experimental-features", "nix-command flakes"
+          , "build"
+          , "nixpkgs#legacyPackages." <> fromString system <> "." <> name <> "." <> output
+          , "--no-link"
+          , "--quiet"
+          , "--json"
+          ]
           empty
       )
       Control.Foldl.head
@@ -168,7 +168,7 @@ compileHaskell files verbosity = do
             for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
               GHC.findImportedModule hsc_env moduleName package >>= \case
                 GHC.Found GHC.ModLocation{ GHC.ml_hs_file = Just _ } _ ->
-                  return [ ( GHC.moduleNameString moduleName ) ]
+                  return [ GHC.moduleNameString moduleName ]
 
                 _ ->
                   return []
@@ -222,15 +222,15 @@ compileHaskell files verbosity = do
   pkgConfFiles <- fmap concat ( forM packageDbs \pkgConfDir -> liftIO do
     pkgConfFiles <- listDirectory pkgConfDir
     fmap concat ( forM pkgConfFiles \pkgConfFile -> do
-      if ( ".conf" `isSuffixOf` pkgConfFile ) then do
+      if ".conf" `isSuffixOf` pkgConfFile then do
         pkgConfText <- BS.readFile ( Turtle.encodeString ( Turtle.decodeString pkgConfDir Turtle.</> Turtle.decodeString pkgConfFile ) )
         case Cabal.parseInstalledPackageInfo pkgConfText of
           Right ( _, pkgConf ) -> do
             let pkgName = Cabal.prettyShow ( Cabal.sourcePackageId pkgConf ) <> "-" <> Cabal.prettyShow ( Cabal.abiHash pkgConf )
-            if ( pkgName `Set.member` pkgNames ) then do
+            if pkgName `Set.member` pkgNames then do
               let importDirs = nub ( Cabal.importDirs pkgConf ++ Cabal.libraryDirs pkgConf ++ Cabal.libraryDynDirs pkgConf )
               importDirs' <- filterM fileExist importDirs
-              return ( fmap ( \importDir -> ( Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) ) importDirs' )
+              return ( fmap ( \importDir -> Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) importDirs' )
             else return []
           Left _ -> return []
       else return [] ) )
@@ -328,7 +328,7 @@ nixBuildHaskell
   -> Text
   -> Text
   -> String
-  -> [ (Map String String) ]
+  -> [ Map String String ]
   -> Text
   -> Text
   -> Maybe String
@@ -336,9 +336,9 @@ nixBuildHaskell
 nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused exeModuleName = liftIO do
   workingDirectory <- getWorkingDirectory
 
-  dataFiles <- fmap ( Maybe.fromMaybe [] . fmap ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
+  dataFiles <- fmap ( Maybe.maybe [] ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
 
-  nativeBuildInputs' <- fmap ( Maybe.fromMaybe [] . fmap ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
+  nativeBuildInputs' <- fmap ( Maybe.maybe [] ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
   let nativeBuildInputs = [ coreutils, jq, gnused ] ++ nativeBuildInputs'
 
   when (verbosity > 1) do
@@ -379,7 +379,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
               , "--offline"
               , "--builders", ""
               , "-L"
-              ] ++ if verbosity < 2 then [ "--quiet" ] else [] )
+              ] ++ [ "--quiet" | verbosity < 2 ] )
             empty
         )
         Control.Foldl.head
@@ -393,7 +393,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
   when ( verbosity > 1 ) do
     putStrLn ( "Finished building " <> show ( length ( Map.keys dependencyGraph ) ) <> " modules" )
 
-  return ( flip fmap results ( \result -> nixBuildJSONOutputs result Map.! "out" ) )
+  return ( fmap ( \result -> nixBuildJSONOutputs result Map.! "out" ) results )
 
 
 rsyncFiles

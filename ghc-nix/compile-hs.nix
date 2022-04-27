@@ -151,4 +151,4 @@ let
       args = [ "-e" builder ];
     }) args.dependencyGraph;
 in
-  hsModules
+  builtins.attrValues hsModules

@@ -4,7 +4,6 @@ let
   args = builtins.fromJSON (builtins.readFile jsonArgsFile);
 
   # from <nixpkgs/lib>
-  concatMapStringsSep = sep: f: list: builtins.concatStringsSep sep (map f list);
   hasPrefix = pref: str: builtins.substring 0 (builtins.stringLength pref) str == pref;
   hasSuffix = suff: str: builtins.stringLength str >= builtins.stringLength suff && builtins.substring (builtins.stringLength str - builtins.stringLength suff) (builtins.stringLength str) str == suff;
 
@@ -33,7 +32,7 @@ let
     target = dataFile;
   }) args.dataFiles;
 
-  PATH = concatMapStringsSep ":" (dir: "${dir}/bin") args.nativeBuildInputs;
+  PATH = builtins.concatStringsSep ":" (map (dir: "${dir}/bin") args.nativeBuildInputs);
 
   packageDb = derivation {
     name = "packagedb";

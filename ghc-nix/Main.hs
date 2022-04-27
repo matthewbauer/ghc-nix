@@ -185,7 +185,7 @@ compileHaskell files verbosity = do
         then Just ( if "Main" `Map.member` dependencyGraph then "Main" else fst ( last dependencyGraph' ) )
         else Nothing
 
-  when (verbosity > 1) do
+  when ( verbosity > 1 ) do
     liftIO ( putStrLn "Finished finding dependency graph..." )
 
   let srcFiles =
@@ -392,6 +392,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
 
   when ( verbosity > 1 ) do
     putStrLn ( "Finished building " <> show ( length ( Map.keys dependencyGraph ) ) <> " modules" )
+    putStrLn ( "Got " <> show ( length results ) <> " results" )
 
   return ( fmap ( \result -> nixBuildJSONOutputs result Map.! "out" ) results )
 

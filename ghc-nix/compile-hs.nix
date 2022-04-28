@@ -5,36 +5,19 @@ let
 
   # from <nixpkgs/lib>
   hasPrefix = pref: str: builtins.substring 0 (builtins.stringLength pref) str == pref;
-  hasSuffix = suff: str: builtins.stringLength str >= builtins.stringLength suff && builtins.substring (builtins.stringLength str - builtins.stringLength suff) (builtins.stringLength str) str == suff;
 
   # check if a string begins with /, without converting it to a path yet
   isAbsolute = path: hasPrefix "/" path;
 
-  # create nix path from a relative path
-  relPath = file:
-    if isAbsolute file then /. + file
-    else if args.workingDirectory == null then ./. + ("/" + file)
-    else if builtins.isPath args.workingDirectory then args.workingDirectory + ("/" + file)
-    else if builtins.isString args.workingDirectory && isAbsolute args.workingDirectory then /. + (args.workingDirectory + "/" + file)
-    else if builtins.isString args.workingDirectory then ./. + ("/" + args.workingDirectory + "/" file)
-    else throw "Invalid type for workingDirectory (${args.workingDirectory}): ${builtins.typeOf args.workingDirectory}.";
-
   # We want the path to be in the Nix store. If starts with /nix/store
   # we can use it directly.
   toNixStore = path:
-    if builtins.isPath path then path
-    else if builtins.isString path && hasPrefix builtins.storeDir path then builtins.storePath path
-    else if builtins.isString path then /. + path
-    else throw "Invalid type for path (${path}): ${builtins.typeOf path}.";
-
-  dataFiles = map (dataFile: {
-    source = relPath dataFile;
-    target = dataFile;
-  }) args.dataFiles;
+    if hasPrefix builtins.storeDir path then builtins.storePath path
+    else /. + path;
 
   PATH = builtins.concatStringsSep ":" (map (dir: "${dir}/bin") args.nativeBuildInputs);
 
-  packageDb = derivation {
+  packageDb = derivationStrict {
     name = "packagedb";
     builder = "${builtins.storePath args.bash}/bin/bash";
     outputs = [ "out" ];
@@ -48,17 +31,15 @@ let
     ghcPkgPath = toNixStore args.ghcPkgPath;
 
     pkgConfFiles = map (x: {
-      pkgConfPath = /. + (x.pkgConfDir + "/" + x.pkgConfFile);
+      pkgConfPath = /. + "${x.pkgConfDir}/${x.pkgConfFile}";
       pkgConfFile = x.pkgConfFile;
       importDirOriginalPath = x.importDir;
       importDirPath =
-        if builtins.isPath x.importDir then x.importDir
-        else if builtins.isString x.importDir && hasPrefix builtins.storeDir x.importDir then builtins.storePath x.importDir
-        else if builtins.isString x.importDir then
+        if hasPrefix builtins.storeDir x.importDir then builtins.storePath x.importDir
+        else
           builtins.filterSource (path: type:
-            type == "directory" || builtins.any (suff: hasSuffix suff (baseNameOf path)) [".dyn_hi" ".hi" ".dylib" ".so" ".dll"]
-          ) (/. + x.importDir)
-        else throw "Invalid type for importDir (${x.importDir}): ${builtins.typeOf x.importDir}.";
+            type == "directory" || builtins.match "^.*\\.(dyn_hi|hi|dylib|so|dll)$" (baseNameOf path) != null
+          ) (/. + x.importDir);
     }) args.pkgConfFiles;
 
     args = [ "-e" (builtins.toFile "builder.sh"
@@ -92,62 +73,67 @@ let
     fi
   done < <(jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE")
 
-  hsRelDir="$(dirname "$hsRelPath")"
+  hsRelDir="$(dirname "$moduleBasePath")"
   mkdir -p "$hsRelDir"
-  ln -sf "$hsNixPath" "$hsRelPath"
+  ln -sf "$hsNixPath" "$moduleBasePath.hs"
 
   chmod -R u+w .
 
-  "$ghcPath" "$hsRelPath" "''${ghcOptions[@]}"
+  "$ghcPath" "$moduleBasePath.hs" "''${ghcOptions[@]}"
 
   shopt -s nullglob
-  mkdir -p "''${outputs[out]}/$moduleBaseDir"
-  mv $hsRelDir/*.o $hsRelDir/*.hi $hsRelDir/*.hie $hsRelDir/*.dyn_o $hsRelDir/*.dyn_hi $hsRelDir/*.p_o "''${outputs[out]}/$moduleBaseDir"
+  mkdir -p "''${outputs[out]}/$hsRelDir"
+  mv $hsRelDir/*.o $hsRelDir/*.hi $hsRelDir/*.hie $hsRelDir/*.dyn_o $hsRelDir/*.dyn_hi $hsRelDir/*.p_o "''${outputs[out]}/$hsRelDir"
   ln -sf  "$hsNixPath" "''${outputs[out]}/$moduleBasePath.hs"
   if [ -f exe ]; then
     mv exe "''${outputs[out]}"
   fi
   '';
 
-  hsModules = builtins.mapAttrs (moduleName: dependencies:
-    let
-      hsPath = args.srcFiles.${moduleName};
-      moduleBasePath = builtins.replaceStrings ["."] ["/"] moduleName;
-      moduleBaseDir = dirOf moduleBasePath;
-      hsNixPath =
-        if builtins.isPath hsPath then hsPath
-        else if builtins.isString hsPath then relPath hsPath
-        else throw "Invalid type for hsPath (${hsPath}): ${builtins.typeOf hsPath}.";
-      hsRelPath =
-        if builtins.isString hsPath && !(isAbsolute hsPath) then hsPath
-        else "${moduleBasePath}.hs";
-    in derivation {
+  baseArgs = {
+    inherit PATH;
+    builder = "${builtins.storePath args.bash}/bin/bash";
+    outputs = [ "out" ];
+    __structuredAttrs = true;
+    preferLocalBuild = true;
+    inherit (args) system;
+    ghcPath = toNixStore args.ghcPath;
+    dataFiles = map (dataFile: {
+      source = /. + "${args.workingDirectory}/${dataFile}";
+      target = dataFile;
+    }) args.dataFiles;
+    shellHook = ''
+      buildPhase() {
+        tmpdir="$(mktemp -d)";
+        trap 'rm -Rf "$tmpdir"' EXIT;
+        cd "$tmpdir";
+        PS4='+ $EPOCHREALTIME ($LINENO)' bash -xe ${builder}
+      }
+    '';
+    args = [ "-e" builder ];
+  };
+
+  ghcOptions = [ "-package-db" packageDb.out ] ++ args.ghcOptions;
+
+  transitiveDependencyGraph = builtins.mapAttrs (_: { hsPath, dependencies }:
+    let immediateDependencies = builtins.listToAttrs (map (name: { inherit name; value = {}; }) dependencies);
+    in {
+      inherit hsPath;
+      dependencies = builtins.foldl' (x: dep: x // transitiveDependencyGraph.${dep}.dependencies) immediateDependencies dependencies;
+    }
+  ) args.dependencyGraph;
+
+  hsModulesOptions = builtins.mapAttrs (_: x: "-i${x.out}") hsModules;
+
+  hsModules = builtins.mapAttrs (moduleName: { hsPath, dependencies }:
+    derivation (baseArgs // {
       name = moduleName;
-      builder = "${builtins.storePath args.bash}/bin/bash";
-      outputs = [ "out" ];
-      __structuredAttrs = true;
-      preferLocalBuild = true;
+      moduleBasePath = builtins.replaceStrings ["."] ["/"] moduleName;
+      hsNixPath = if isAbsolute hsPath then /. + hsPath else /. + "${args.workingDirectory}/${hsPath}";
 
-      inherit hsRelPath hsNixPath moduleBaseDir moduleBasePath dataFiles PATH;
-
-      inherit (args) system;
-
-      ghcPath = toNixStore args.ghcPath;
-      ghcOptions = [ "-package-db" packageDb ]
-        ++ (if args.exeModuleName != null && moduleName == args.exeModuleName then [ "-o" "exe" ] else [ "-c" ])
-        ++ args.ghcOptions
-        ++ map (dep: "-i${hsModules.${dep}}") dependencies;
-
-      shellHook = ''
-        buildPhase() {
-          tmpdir="$(mktemp -d)";
-          trap 'rm -Rf "$tmpdir"' EXIT;
-          cd "$tmpdir";
-          PS4='+ $EPOCHREALTIME ($LINENO)' bash -xe ${builder}
-        }
-      '';
-
-      args = [ "-e" builder ];
-    }) args.dependencyGraph;
+      ghcOptions = ghcOptions
+        ++ (if moduleName == args.exeModuleName then [ "-o" "exe" ] else [ "-c" ])
+        ++ (map (dep: hsModulesOptions.${dep}) (builtins.attrNames dependencies));
+    })) transitiveDependencyGraph;
 in
   builtins.attrValues hsModules

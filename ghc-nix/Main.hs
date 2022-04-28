@@ -25,7 +25,6 @@ import qualified Data.Map.Strict as Map
 import Data.Map.Strict ( Map )
 import qualified Data.Maybe as Maybe
 import qualified Data.Set as Set
-import Data.Set ( Set )
 import Data.String ( fromString )
 import qualified Data.Text as T
 import Data.Text ( Text )
@@ -160,9 +159,9 @@ compileHaskell files verbosity = do
     fmap concat do
       for stronglyConnectedComponents \case
 #if MIN_VERSION_ghc(9, 0, 0)
-        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just _ } } } ) ) -> do
+        AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } } ) ) -> do
 #else
-        AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just _ } } -> do
+        AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } -> do
 #endif
           dependencies <-
             for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
@@ -173,12 +172,12 @@ compileHaskell files verbosity = do
                 _ ->
                   return []
 
-          return [ ( GHC.moduleNameString ( GHC.ms_mod_name ms ) , concat dependencies ) ]
+          return [ ( GHC.moduleNameString ( GHC.ms_mod_name ms ) , JSON.object [ "hsPath" .= srcFile, "dependencies" .= concat dependencies ] ) ]
 
         _ ->
           return mempty
 
-  let dependencyGraph = Map.fromListWith mappend dependencyGraph'
+  let dependencyGraph = Map.fromList dependencyGraph'
 
   let mExeMainModule = -- TODO: this should do the same thing GHC does in this situation
         if Maybe.isJust mOfile
@@ -188,17 +187,13 @@ compileHaskell files verbosity = do
   when ( verbosity > 1 ) do
     liftIO ( putStrLn "Finished finding dependency graph..." )
 
-  let srcFiles =
-         Map.unions do
-           flip fmap stronglyConnectedComponents \case
 #if MIN_VERSION_ghc(9, 0, 0)
-             AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } } ) ) ->
+  GHC.DynFlags{ GHC.homeUnitId_ } <- GHC.getSessionDynFlags
+  let homeUnitId = GHC.unitString homeUnitId_
 #else
-             AcyclicSCC ms@GHC.ModSummary{ GHC.ms_location = GHC.ModLocation{ GHC.ml_hs_file = Just srcFile } } ->
+  GHC.DynFlags{ GHC.thisInstalledUnitId } <- GHC.getSessionDynFlags
+  let homeUnitId = GHC.installedUnitIdString thisInstalledUnitId
 #endif
-               Map.singleton ( GHC.moduleNameString ( GHC.ms_mod_name ms ) ) srcFile
-
-             _ -> mempty
 
   pkgNames <- fmap Set.unions ( for stronglyConnectedComponents \case
 #if MIN_VERSION_ghc(9, 0, 0)
@@ -208,12 +203,13 @@ compileHaskell files verbosity = do
 #endif
       fmap Set.unions ( for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
         GHC.findImportedModule hsc_env moduleName package >>= \case
-          GHC.Found _ ( GHC.Module pkgName _ ) ->
+          GHC.Found _ ( GHC.Module pkgName' _ ) -> do
 #if MIN_VERSION_ghc(9, 0, 0)
-            return ( Set.singleton ( GHC.unitString pkgName ) )
+            let pkgName = GHC.unitString pkgName'
 #else
-            return ( Set.singleton ( GHC.unitIdString pkgName ) )
+            let pkgName = GHC.unitIdString pkgName'
 #endif
+            return ( if pkgName /= homeUnitId then Set.singleton pkgName else Set.empty )
 
           _ -> return Set.empty )
 
@@ -246,7 +242,7 @@ compileHaskell files verbosity = do
     jq <- nixBuildTool system "jq" "bin"
     gnused <- nixBuildTool system "gnused" "out"
 
-    buildResult <- tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder ( transitiveDependencies dependencyGraph ) srcFiles verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused mExeMainModule )
+    buildResult <- tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused mExeMainModule )
 
     case buildResult of
       Left e -> do
@@ -284,13 +280,6 @@ compileHaskell files verbosity = do
         pure ()
 
 
-transitiveDependencies
-  :: Map String [ String ] -> Map String (Set String)
-transitiveDependencies dependencyGraph =
-  let dependencyGraph' = flip fmap dependencyGraph \dependencies ->
-        Set.union ( Set.fromList dependencies ) ( Set.unions ( flip fmap dependencies \dependency -> dependencyGraph' Map.! dependency ) )
-  in dependencyGraph'
-
 interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do
   args <- liftIO getArgs
@@ -321,8 +310,7 @@ nixBuildHaskell
   => Text
   -> [ String ]
   -> String
-  -> Map String (Set String)
-  -> Map String FilePath
+  -> Map String JSON.Value
   -> Int
   -> Text
   -> Text
@@ -333,7 +321,7 @@ nixBuildHaskell
   -> Text
   -> Maybe String
   -> m [Text]
-nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused exeModuleName = liftIO do
+nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused exeModuleName = liftIO do
   workingDirectory <- getWorkingDirectory
 
   dataFiles <- fmap ( Maybe.maybe [] ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
@@ -348,7 +336,6 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
                    [ "ghcPath" .= ghcPath
                    , "ghcPkgPath" .= ghcPkgPath
                    , "dependencyGraph" .= dependencyGraph
-                   , "srcFiles" .= srcFiles
                    , "nativeBuildInputs" .= nativeBuildInputs
                    , "ghcOptions" .= ghcOptions
                    , "pkgConfFiles" .= pkgConfFiles
@@ -379,7 +366,7 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph srcFiles verbosity 
               , "--offline"
               , "--builders", ""
               , "-L"
-              ] ++ [ "-vvvvv" | verbosity >= 2 ]
+              ] ++ [ "-vvvvv" | verbosity >= 5 ]
                 ++ [ "--quiet" | verbosity < 2 ] )
             empty
         )

@@ -88,6 +88,8 @@ let
   if [ -f exe ]; then
     mv exe "''${outputs[out]}"
   fi
+  mkdir -p "''${outputs[out]}"/nix-support
+  echo -n $moduleBasePath.hs > "''${outputs[out]}"/nix-support/module-path
   '';
 
   baseArgs = {

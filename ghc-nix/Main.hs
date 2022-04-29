@@ -42,6 +42,7 @@ import qualified Turtle
 import qualified Distribution.InstalledPackageInfo as Cabal
 import qualified Distribution.Pretty as Cabal
 import System.Directory ( listDirectory )
+import System.FilePath ( takeDirectory )
 import qualified Data.ByteString as BS
 import System.Posix.Files (fileExist)
 
@@ -256,6 +257,31 @@ compileHaskell files verbosity = do
   GHC.DynFlags{ GHC.objectDir, GHC.hiDir, GHC.hieDir } <-
     GHC.getSessionDynFlags
 
+  cacheDir <- case objectDir of
+    Just dir -> return ( Turtle.decodeString dir Turtle.</> ".ghc-nix" )
+    Nothing -> do
+      workingDirectory <- liftIO getWorkingDirectory
+      return ( Turtle.decodeString workingDirectory Turtle.</> ".ghc-nix" )
+  forM_ outputs \output -> liftIO do
+    fileName <- Turtle.readTextFile ( Turtle.fromText output Turtle.</> "nix-support" Turtle.</> "module-path" )
+    let root = cacheDir Turtle.</> Turtle.fromText fileName
+    exists <- Turtle.testfile root
+    when exists do
+      nixPath <- Turtle.readlink root
+      when ( nixPath /= Turtle.fromText output ) do -- file was changed, delete the old build product from the nix store
+        Turtle.rm root
+        _ <- Turtle.proc "nix-store" [ "--delete", fromString ( Turtle.encodeString nixPath ) ] empty
+        return ()
+    Turtle.mktree ( Turtle.decodeString ( takeDirectory ( Turtle.encodeString root ) ) )
+    _ <- Turtle.proc "nix"
+      [ "--extra-experimental-features", "nix-command"
+      , "build"
+      , output
+      , "-o", fromString ( Turtle.encodeString root )
+      ]
+      empty
+    return ()
+
   for_ objectDir \dir ->
     rsyncFiles [ ".o", ".dyn_o", ".p_o" ] outputs dir
 
@@ -284,7 +310,7 @@ interpretCommandLine :: Ghc ( [ FilePath ], Int )
 interpretCommandLine = do
   args <- liftIO getArgs
 
-  Turtle.when ( null args ) do
+  when ( null args ) do
     liftIO ( putStrLn "Provide Haskell files as arguments." )
     liftIO exitFailure
 

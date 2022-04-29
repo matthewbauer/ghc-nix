@@ -10,7 +10,7 @@ module Main ( main ) where
 import Paths_ghc_nix ( getDataFileName )
 
 import System.Posix.Directory ( getWorkingDirectory )
-import System.Info ( os, arch)
+import System.Info ( os, arch )
 import Data.Graph ( SCC (..) )
 import Data.List ( (\\) , isSuffixOf , nub, intercalate )
 import Control.Applicative ( empty )
@@ -311,7 +311,7 @@ compileHaskell files verbosity = do
           , fromString ofile
           ]
           empty
-        pure ()
+        return ()
 
 
 interpretCommandLine :: Ghc ( [ FilePath ], Int )

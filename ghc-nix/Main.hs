@@ -16,7 +16,7 @@ import Data.List ( (\\) , isSuffixOf , nub, intercalate )
 import Control.Applicative ( empty )
 import Control.Exception.Safe ( tryAny, throwIO )
 import qualified Control.Foldl
-import Control.Monad ( void , when , forM , filterM )
+import Control.Monad ( void , when , unless , forM , filterM )
 import Control.Monad.IO.Class ( MonadIO, liftIO )
 import qualified Data.Aeson as JSON
 import Data.Aeson ((.:), (.=))
@@ -262,24 +262,32 @@ compileHaskell files verbosity = do
     Nothing -> do
       workingDirectory <- liftIO getWorkingDirectory
       return ( Turtle.decodeString workingDirectory Turtle.</> ".ghc-nix" )
-  forM_ outputs \output -> liftIO do
+  outputsAndRootsToReplace <- fmap Maybe.catMaybes ( forM outputs \output -> liftIO do
     fileName <- Turtle.readTextFile ( Turtle.fromText output Turtle.</> "nix-support" Turtle.</> "module-path" )
     let root = cacheDir Turtle.</> Turtle.fromText fileName
     exists <- Turtle.testfile root
-    when exists do
-      nixPath <- Turtle.readlink root
-      when ( nixPath /= Turtle.fromText output ) do -- file was changed, delete the old build product from the nix store
+    if exists then do
+      oldOutput <- Turtle.readlink root
+      if ( oldOutput /= Turtle.fromText output ) then do
         Turtle.rm root
-        _ <- Turtle.proc "nix-store" [ "--delete", fromString ( Turtle.encodeString nixPath ) ] empty
-        return ()
+        return ( Just ( output, root) )
+      else return Nothing
+    else return Nothing )
+  unless (null outputsAndRootsToReplace) do
+    _ <- liftIO ( Turtle.proc "nix"
+      ([ "--extra-experimental-features", "nix-command"
+      , "store"
+      , "delete"
+      ] ++ fmap fst outputsAndRootsToReplace) empty )
+    return ()
+  forM_ outputsAndRootsToReplace \( output, root ) -> liftIO do
     Turtle.mktree ( Turtle.decodeString ( takeDirectory ( Turtle.encodeString root ) ) )
     _ <- Turtle.proc "nix"
       [ "--extra-experimental-features", "nix-command"
       , "build"
       , output
       , "-o", fromString ( Turtle.encodeString root )
-      ]
-      empty
+      ] empty
     return ()
 
   for_ objectDir \dir ->

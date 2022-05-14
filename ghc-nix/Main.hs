@@ -24,7 +24,6 @@ import Data.Foldable
 import qualified Data.Map.Strict as Map
 import Data.Map.Strict ( Map )
 import qualified Data.Maybe as Maybe
-import qualified Data.Set as Set
 import Data.String ( fromString )
 import qualified Data.Text as T
 import Data.Text ( Text )
@@ -36,11 +35,10 @@ import qualified GHC.Paths as GHC
 import System.Environment ( getArgs )
 import System.Exit ( exitFailure )
 import System.FilePath ( takeExtension )
-import qualified System.IO as IO
-import System.IO.Temp ( getCanonicalTemporaryDirectory, withTempFile )
+import System.IO.Temp ( withSystemTempDirectory )
 import qualified Turtle
 import qualified Distribution.InstalledPackageInfo as Cabal
-import qualified Distribution.Pretty as Cabal
+import qualified Distribution.Types.UnitId as Cabal
 import System.Directory ( listDirectory )
 import System.FilePath ( takeDirectory )
 import qualified Data.ByteString as BS
@@ -97,33 +95,39 @@ instance JSON.FromJSON NixBuildJSON where
     nixBuildJSONOutputs <- o .: "outputs"
     return NixBuildJSON { nixBuildJSONDrvPath, nixBuildJSONOutputs }
 
-nixBuildTool :: (MonadIO io, MonadFail io) => String -> Text -> Text -> io Text
-nixBuildTool system name output = do
-  Just ( Turtle.lineToText -> bashJSON ) <-
-    Turtle.fold
-      ( Turtle.inproc
-          "nix"
-          [ "--extra-experimental-features", "nix-command flakes"
-          , "build"
-          , "nixpkgs#legacyPackages." <> fromString system <> "." <> name <> "." <> output
-          , "--no-link"
-          , "--quiet"
-          , "--json"
-          ]
-          empty
-      )
-      Control.Foldl.head
+nixBuildTool :: (MonadIO io, MonadFail io) => String -> Text -> Text -> String -> io Turtle.FilePath
+nixBuildTool system name output command = do
+  mPath <- Turtle.which ( Turtle.decodeString command )
+  case mPath of
+    Just path -> do
+      realdir <- Turtle.realpath ( Turtle.decodeString ( takeDirectory ( Turtle.encodeString path ) ) )
+      return realdir
+    Nothing -> do
+      Just ( Turtle.lineToText -> bashJSON ) <-
+        Turtle.fold
+          ( Turtle.inproc
+              "nix"
+              [ "--extra-experimental-features", "nix-command flakes"
+              , "build"
+              , "nixpkgs#legacyPackages." <> fromString system <> "." <> name <> "." <> output
+              , "--no-link"
+              , "--quiet"
+              , "--json"
+              ]
+              empty
+          )
+          Control.Foldl.head
 
-  Just results <- return ( JSON.decodeStrict ( TE.encodeUtf8 bashJSON ) )
+      Just results <- return ( JSON.decodeStrict ( TE.encodeUtf8 bashJSON ) )
 
-  Just result <- return ( Maybe.listToMaybe results )
+      Just result <- return ( Maybe.listToMaybe results )
 
-  return ( nixBuildJSONOutputs result Map.! output )
+      return ( Turtle.fromText ( nixBuildJSONOutputs result Map.! output ) Turtle.</> "bin" )
 
 
 compileHaskell :: [ FilePath ] -> Int -> Ghc ()
 compileHaskell files verbosity = do
-  when (verbosity > 1) do
+  when ( verbosity > 1 ) do
     liftIO ( putStrLn "Starting ghc-nix..." )
 
   ( ghcOptions, packageDbs, mOfile ) <- do
@@ -134,9 +138,6 @@ compileHaskell files verbosity = do
       liftIO ( putStrLn ( "Got args: " <> intercalate " " commandLineArguments ) )
 
     return ( relayedArguments ( commandLineArguments \\ files ) )
-
-  hsBuilder <-
-    liftIO ( getDataFileName "compile-hs.nix" )
 
   targets <-
     traverse ( \filePath -> GHC.guessTarget filePath Nothing ) files
@@ -153,7 +154,7 @@ compileHaskell files verbosity = do
     stronglyConnectedComponents =
       GHC.topSortModuleGraph False moduleGraph Nothing
 
-  when (verbosity > 1) do
+  when ( verbosity > 1 ) do
     liftIO ( putStrLn "Finding dependency graph..." )
 
   dependencyGraph' <-
@@ -196,54 +197,8 @@ compileHaskell files verbosity = do
   let homeUnitId = GHC.installedUnitIdString thisInstalledUnitId
 #endif
 
-  pkgNames <- fmap Set.unions ( for stronglyConnectedComponents \case
-#if MIN_VERSION_ghc(9, 0, 0)
-    AcyclicSCC ( GHC.ModuleNode ( GHC.ExtendedModSummary{ GHC.emsModSummary = ms } ) ) -> do
-#else
-    AcyclicSCC ms ->
-#endif
-      fmap Set.unions ( for ( GHC.ms_imps ms ) \( package, GHC.L _ moduleName ) -> liftIO do
-        GHC.findImportedModule hsc_env moduleName package >>= \case
-          GHC.Found _ ( GHC.Module pkgName' _ ) -> do
-#if MIN_VERSION_ghc(9, 0, 0)
-            let pkgName = GHC.unitString pkgName'
-#else
-            let pkgName = GHC.unitIdString pkgName'
-#endif
-            return ( if pkgName /= homeUnitId then Set.singleton pkgName else Set.empty )
-
-          _ -> return Set.empty )
-
-    _ -> return Set.empty )
-
-  pkgConfFiles <- fmap concat ( forM packageDbs \pkgConfDir -> liftIO do
-    pkgConfFiles <- listDirectory pkgConfDir
-    fmap concat ( forM pkgConfFiles \pkgConfFile -> do
-      if ".conf" `isSuffixOf` pkgConfFile then do
-        pkgConfText <- BS.readFile ( Turtle.encodeString ( Turtle.decodeString pkgConfDir Turtle.</> Turtle.decodeString pkgConfFile ) )
-        case Cabal.parseInstalledPackageInfo pkgConfText of
-          Right ( _, pkgConf ) -> do
-            let pkgName = Cabal.prettyShow ( Cabal.sourcePackageId pkgConf ) <> "-" <> Cabal.prettyShow ( Cabal.abiHash pkgConf )
-            if pkgName `Set.member` pkgNames then do
-              let importDirs = nub ( Cabal.importDirs pkgConf ++ Cabal.libraryDirs pkgConf ++ Cabal.libraryDynDirs pkgConf )
-              importDirs' <- filterM fileExist importDirs
-              return ( fmap ( \importDir -> Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) importDirs' )
-            else return []
-          Left _ -> return []
-      else return [] ) )
-
   outputs <- liftIO do
-    Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
-    Just ghcPkgPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc-pkg" )
-
-    let system = arch <> "-" <> os
-
-    bash <- nixBuildTool system "bash" "out"
-    coreutils <- nixBuildTool system "coreutils" "out"
-    jq <- nixBuildTool system "jq" "bin"
-    gnused <- nixBuildTool system "gnused" "out"
-
-    buildResult <- tryAny ( nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused mExeMainModule )
+    buildResult <- tryAny ( nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs mExeMainModule homeUnitId )
 
     case buildResult of
       Left e -> do
@@ -273,8 +228,8 @@ compileHaskell files verbosity = do
         return ( Just ( output, root) )
       else return Nothing
     else return Nothing )
-  unless (null outputsAndRootsToReplace) do
-    _ <- liftIO ( Turtle.proc "nix"
+  unless ( null outputsAndRootsToReplace ) do
+    _ <- liftIO ( Turtle.procs "nix"
       ([ "--extra-experimental-features", "nix-command"
       , "store"
       , "delete"
@@ -282,7 +237,7 @@ compileHaskell files verbosity = do
     return ()
   forM_ outputsAndRootsToReplace \( output, root ) -> liftIO do
     Turtle.mktree ( Turtle.decodeString ( takeDirectory ( Turtle.encodeString root ) ) )
-    _ <- Turtle.proc "nix"
+    _ <- Turtle.procs "nix"
       [ "--extra-experimental-features", "nix-command"
       , "build"
       , output
@@ -304,7 +259,7 @@ compileHaskell files verbosity = do
       let exePath = Turtle.fromText dir Turtle.</> "exe"
       exists <- Turtle.testpath exePath
       when exists do
-        _ <- Turtle.proc
+        _ <- Turtle.procs
           "cp"
           [ "-f"
           , fromString ( Turtle.encodeString exePath )
@@ -341,50 +296,98 @@ interpretCommandLine = do
 
 nixBuildHaskell
   :: MonadIO m
-  => Text
-  -> [ String ]
-  -> String
+  => [ String ]
   -> Map String JSON.Value
   -> Int
-  -> Text
-  -> Text
-  -> Text
-  -> String
-  -> [ Map String String ]
-  -> Text
-  -> Text
+  -> [ String ]
   -> Maybe String
+  -> String
   -> m [Text]
-nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph verbosity bash coreutils jq system pkgConfFiles ghcPkgPath gnused exeModuleName = liftIO do
+nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName homeUnitId = liftIO do
+  hsBuilder <-
+    liftIO ( getDataFileName "compile-hs.nix" )
+
+  ( ghcPath, ghcPkgPath, packageDbs' ) <- liftIO do
+    ghcPackagePaths <- fmap ( filter (not . null)
+                              . fmap T.unpack
+                              . Maybe.fromMaybe []
+                              . fmap ( T.splitOn ":" ) ) ( Turtle.need "GHC_PACKAGE_PATH" )
+    mNixGhc <- Turtle.need "NIX_GHC"
+    case mNixGhc of
+      Just ghcPath -> do
+        Just ghcPkgPath <- Turtle.need "NIX_GHCPKG"
+        Just ghcLibDirPath <- Turtle.need "NIX_GHC_LIBDIR"
+        let basePackageDb = fromString ( Turtle.encodeString ( Turtle.decodeString ( T.unpack ghcLibDirPath ) Turtle.</> "package.conf.d" ) )
+        return ( ghcPath , ghcPkgPath , basePackageDb : ( packageDbs ++ ghcPackagePaths ) )
+      Nothing -> do
+        Just ghcPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc" )
+        Just ghcPkgPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc-pkg" )
+        return ( ghcPath , ghcPkgPath , packageDbs ++ ghcPackagePaths )
+
+  let system = arch <> "-" <> os
+
+  when ( verbosity > 1 ) do
+    liftIO ( putStrLn ( "Finding build tools..." ) )
+
+  bash <- fmap ( \path -> path Turtle.</> "bash" ) ( nixBuildTool system "bash" "out" "bash" )
+  coreutils <- nixBuildTool system "coreutils" "out" "coreutils"
+  jq <- nixBuildTool system "jq" "bin" "jq"
+  gnused <- nixBuildTool system "gnused" "out" "sed"
+
+  when ( verbosity > 1 ) do
+    liftIO ( putStrLn ( "Finished finding build tools." ) )
+
   workingDirectory <- getWorkingDirectory
 
   dataFiles <- fmap ( Maybe.maybe [] ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
+  dataFilesIgnore <- Turtle.need "NIX_GHC_DATA_FILES_IGNORE"
 
-  nativeBuildInputs' <- fmap ( Maybe.maybe [] ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_NATIVE_BUILD_INPUTS" )
-  let nativeBuildInputs = [ coreutils, jq, gnused ] ++ nativeBuildInputs'
+  path' <- fmap ( Maybe.maybe [] ( T.splitOn ":" ) ) ( Turtle.need "NIX_GHC_PATH" )
+  let path = ( fmap ( fromString . Turtle.encodeString ) [ coreutils, jq, gnused ] ) ++ path'
 
   when (verbosity > 1) do
     putStrLn "Building..."
 
-  let jsonArgs = JSON.object
-                   [ "ghcPath" .= ghcPath
-                   , "ghcPkgPath" .= ghcPkgPath
-                   , "dependencyGraph" .= dependencyGraph
-                   , "nativeBuildInputs" .= nativeBuildInputs
-                   , "ghcOptions" .= ghcOptions
-                   , "pkgConfFiles" .= pkgConfFiles
-                   , "dataFiles" .= dataFiles
-                   , "workingDirectory" .= workingDirectory
-                   , "bash" .= bash
-                   , "system" .= system
-                   , "exeModuleName" .= exeModuleName ]
+  json <- withSystemTempDirectory "ghc-nix" \tmpdir -> do
+    pkgConfFiles <- fmap concat ( forM packageDbs' \pkgConfDir -> do
+      pkgConfFiles <- listDirectory pkgConfDir
+      fmap concat ( forM pkgConfFiles \pkgConfFile -> do
+        if ".conf" `isSuffixOf` pkgConfFile then do
+          pkgConfText <- BS.readFile ( Turtle.encodeString ( Turtle.decodeString pkgConfDir Turtle.</> Turtle.decodeString pkgConfFile ) )
+          case Cabal.parseInstalledPackageInfo pkgConfText of
+            Right ( _, pkgConf ) -> do
+              let pkgName = Cabal.unUnitId ( Cabal.installedUnitId pkgConf )
+              if pkgName /= homeUnitId then do
+                let importDirs = nub ( Cabal.importDirs pkgConf ++ Cabal.libraryDirs pkgConf )
+                importDirs' <- flip filterM importDirs \importDir -> do
+                  exists' <- fileExist importDir
+                  unless exists' do
+                    putStrLn ( "Directory " <> importDir <> " doesn't exist, skipping " <> pkgName )
+                  pure exists'
+                return ( fmap ( \importDir -> Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) importDirs' )
+              else return []
+            Left _ -> return []
+        else return [] ) )
 
-  tmpdir <- getCanonicalTemporaryDirectory
-  json <- withTempFile tmpdir "ghc-nix-args.json" \tmpFile handle -> do
-    IO.hClose handle
+    let jsonArgs = JSON.object
+                     [ "ghcPath" .= ghcPath
+                     , "ghcPkgPath" .= ghcPkgPath
+                     , "dependencyGraph" .= dependencyGraph
+                     , "PATH" .= path
+                     , "ghcOptions" .= ghcOptions
+                     , "pkgConfFiles" .= ( pkgConfFiles :: [ Map String String ] )
+                     , "dataFiles" .= dataFiles
+                     , "dataFilesIgnore" .= dataFilesIgnore
+                     , "workingDirectory" .= workingDirectory
+                     , "bash" .= Turtle.encodeString bash
+                     , "system" .= system
+                     , "exeModuleName" .= exeModuleName ]
+
+    let jsonFile = Turtle.decodeString tmpdir Turtle.</> "ghc-nix-args.json"
+
     when (verbosity > 1) do
       putStrLn "Writing json..."
-    JSON.encodeFile tmpFile jsonArgs
+    JSON.encodeFile ( Turtle.encodeString jsonFile ) jsonArgs
     when (verbosity > 1) do
       putStrLn "Running nix build..."
     Just ( Turtle.lineToText -> json ) <-
@@ -394,11 +397,9 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph verbosity bash core
             ( [ "--extra-experimental-features", "nix-command"
               , "build"
               , "-f", fromString hsBuilder
-              , "--argstr", "jsonArgsFile", fromString tmpFile
+              , "--argstr", "jsonArgsFile", fromString ( Turtle.encodeString jsonFile )
               , "--no-link"
               , "--json"
-              , "--offline"
-              , "--builders", ""
               , "-L"
               ] ++ [ "-vvvvv" | verbosity >= 5 ]
                 ++ [ "--quiet" | verbosity < 2 ] )
@@ -421,9 +422,9 @@ nixBuildHaskell ghcPath ghcOptions hsBuilder dependencyGraph verbosity bash core
 
 rsyncFiles
   :: ( MonadIO io, Foldable f, Foldable g )
-  => f Text -> g Text -> String -> io Turtle.ExitCode
+  => f Text -> g Text -> String -> io ()
 rsyncFiles suffixes outputs dir = do
-  Turtle.proc
+  Turtle.procs
     "rsync"
     ( concat
         [ [ "--recursive"
@@ -445,7 +446,7 @@ proxyToGHC = do
   arguments <-
     liftIO getArgs
 
-  void ( Turtle.proc "ghc" ( map fromString arguments ) empty )
+  void ( Turtle.procs "ghc" ( map fromString arguments ) empty )
 
 
 relayedArguments :: [ String ] -> ( [ String ], [ String ] , Maybe String )

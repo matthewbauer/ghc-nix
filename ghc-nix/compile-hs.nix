@@ -15,11 +15,11 @@ let
     if hasPrefix builtins.storeDir path then builtins.storePath path
     else /. + path;
 
-  PATH = builtins.concatStringsSep ":" (map (dir: "${dir}/bin") args.nativeBuildInputs);
+  PATH = builtins.concatStringsSep ":" args.PATH;
 
   packageDb = derivationStrict {
     name = "packagedb";
-    builder = "${builtins.storePath args.bash}/bin/bash";
+    builder = builtins.storePath args.bash;
     outputs = [ "out" ];
     __structuredAttrs = true;
     preferLocalBuild = true;
@@ -94,14 +94,20 @@ let
 
   baseArgs = {
     inherit PATH;
-    builder = "${builtins.storePath args.bash}/bin/bash";
+    builder = builtins.storePath args.bash;
     outputs = [ "out" ];
     __structuredAttrs = true;
     preferLocalBuild = true;
     inherit (args) system;
     ghcPath = toNixStore args.ghcPath;
     dataFiles = map (dataFile: {
-      source = /. + "${args.workingDirectory}/${dataFile}";
+      source =
+        let source' = /. + "${args.workingDirectory}/${dataFile}";
+        in if args.dataFilesIgnore != null
+        then builtins.filterSource
+               (path: type: type == "directory" || builtins.match args.dataFilesIgnore (baseNameOf path) == null)
+               source'
+        else source';
       target = dataFile;
     }) args.dataFiles;
     shellHook = ''

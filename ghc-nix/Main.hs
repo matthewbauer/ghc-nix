@@ -405,7 +405,9 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
               , "--json"
               , "-L"
               ] ++ [ "-vvvvv" | verbosity >= 5 ]
-                ++ [ "--quiet" | verbosity < 2 ] )
+                ++ [ "--quiet" | verbosity < 2 ]
+              -- we could use builtin substituters, but they could be slow
+                ++ Maybe.maybe [ "--offline", "--builders", "" ] (\subs -> [ "--substituters", subs ]) mNixSubstituters )
             empty
         )
         Control.Foldl.head

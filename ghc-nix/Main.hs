@@ -324,6 +324,8 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
         Just ghcPkgPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc-pkg" )
         return ( ghcPath , ghcPkgPath , packageDbs ++ ghcPackagePaths )
 
+  mNixSubstituters <- Turtle.need "NIX_GHC_SUBSTITUTERS"
+
   let system = arch <> "-" <> os
 
   when ( verbosity > 1 ) do
@@ -397,6 +399,7 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
             ( [ "--extra-experimental-features", "nix-command"
               , "build"
               , "-f", fromString hsBuilder
+              , "--substituters", Maybe.fromMaybe "" mNixSubstituters -- we could use builtin substituters, but they could be slow
               , "--argstr", "jsonArgsFile", fromString ( Turtle.encodeString jsonFile )
               , "--no-link"
               , "--json"

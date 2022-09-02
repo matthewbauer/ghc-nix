@@ -344,8 +344,13 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
   dataFiles <- fmap ( Maybe.maybe [] ( T.splitOn " " ) ) ( Turtle.need "NIX_GHC_DATA_FILES" )
   dataFilesIgnore <- Turtle.need "NIX_GHC_DATA_FILES_IGNORE"
 
+  perSystemPath <- case system of
+    "aarch64-darwin" -> do
+      codesign_allocate <- nixBuildTool system "cctools" "out" "codesign_allocate"
+      return [codesign_allocate]
+    _ -> return []
   path' <- fmap ( Maybe.maybe [] ( T.splitOn ":" ) ) ( Turtle.need "NIX_GHC_PATH" )
-  let path = ( fmap ( fromString . Turtle.encodeString ) [ coreutils, jq, gnused ] ) ++ path'
+  let path = ( fmap ( fromString . Turtle.encodeString ) ([ coreutils, jq, gnused ] ++ perSystemPath) ) ++ path'
 
   when (verbosity > 1) do
     putStrLn "Building..."
@@ -365,7 +370,7 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
                   exists' <- fileExist importDir
                   unless exists' do
                     putStrLn ( "Directory " <> importDir <> " doesn't exist, skipping " <> pkgName )
-                  pure exists'
+                  return exists'
                 return ( fmap ( \importDir -> Map.fromList [ ( "pkgConfDir", pkgConfDir ) , ( "pkgConfFile" , pkgConfFile ) , ( "importDir" , importDir ) ] ) importDirs' )
               else return []
             Left _ -> return []

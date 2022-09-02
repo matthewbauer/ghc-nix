@@ -75,9 +75,12 @@ let
 
   hsRelDir="$(dirname "$moduleBasePath")"
   mkdir -p "$hsRelDir"
-  ln -sf "$hsNixPath" "$moduleBasePath.hs"
+  cp "$hsNixPath" "$moduleBasePath.hs"
 
   chmod -R u+w .
+
+  # a trick for file-embed
+  touch .cabal
 
   "$ghcPath" "$moduleBasePath.hs" "''${ghcOptions[@]}"
 

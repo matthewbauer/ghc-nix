@@ -78,6 +78,9 @@ main = do
     "--print-libdir" : _ ->
       proxyToGHC
 
+    "--interactive" : _ ->
+      proxyToGHC
+
     _ -> GHC.runGhc ( Just GHC.libdir ) do
       ( files, verbosity ) <-
         interpretCommandLine

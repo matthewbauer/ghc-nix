@@ -417,9 +417,11 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
               , "--no-link"
               , "--json"
               , "-L"
-              , "--option", "max-silent-time", "300"
-              , "--option", "max-jobs", show ( max (numProcs - 1) 1 )
+              , "--option", "max-jobs", fromString ( show ( max (numProcs - 1) 1 ) )
               , "--option", "cores", "1"
+              , "--option", "max-silent-time", "60"
+              , "--option", "timeout", "120"
+              , "--option", "build-poll-interval", "1"
               ] ++ [ "-vvvvv" | verbosity >= 5 ]
                 ++ [ "--quiet" | verbosity < 2 ]
               -- we could use builtin substituters, but they could be slow

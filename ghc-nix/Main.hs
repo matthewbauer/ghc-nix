@@ -414,6 +414,7 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
               , "--no-link"
               , "--json"
               , "-L"
+              , "--option", "max-silent-time", "300"
               ] ++ [ "-vvvvv" | verbosity >= 5 ]
                 ++ [ "--quiet" | verbosity < 2 ]
               -- we could use builtin substituters, but they could be slow

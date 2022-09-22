@@ -124,7 +124,7 @@ let
     args = [ "-e" builder ];
   };
 
-  ghcOptions = [ "-package-db" packageDb.out ] ++ args.ghcOptions;
+  ghcOptions = [ "-package-db" packageDb.out ] ++ args.ghcOptions ++ [ "-j1" ];
 
   transitiveDependencyGraph = builtins.mapAttrs (_: { hsPath, dependencies }:
     let immediateDependencies = builtins.listToAttrs (map (name: { inherit name; value = {}; }) dependencies);

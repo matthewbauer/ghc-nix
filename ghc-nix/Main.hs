@@ -43,6 +43,7 @@ import System.Directory ( listDirectory )
 import System.FilePath ( takeDirectory )
 import qualified Data.ByteString as BS
 import System.Posix.Files (fileExist)
+import GHC.Conc (getNumProcessors)
 
 #if MIN_VERSION_ghc(9, 0, 0)
 import qualified GHC.Driver.Session as GHC
@@ -397,6 +398,8 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
 
     let jsonFile = Turtle.decodeString tmpdir Turtle.</> "ghc-nix-args.json"
 
+    numProcs <- liftIO getNumProcessors
+
     when (verbosity > 1) do
       putStrLn "Writing json..."
     JSON.encodeFile ( Turtle.encodeString jsonFile ) jsonArgs
@@ -415,6 +418,8 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
               , "--json"
               , "-L"
               , "--option", "max-silent-time", "300"
+              , "--option", "max-jobs", show ( max (numProcs - 1) 1 )
+              , "--option", "cores", "1"
               ] ++ [ "-vvvvv" | verbosity >= 5 ]
                 ++ [ "--quiet" | verbosity < 2 ]
               -- we could use builtin substituters, but they could be slow

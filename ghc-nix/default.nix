@@ -1,6 +1,7 @@
-{ mkDerivation, aeson, async, base, containers, directory, filepath
-, foldl, ghc, ghc-paths, safe-exceptions, stdenv, text, turtle
-, unordered-containers, unix
+{ mkDerivation, aeson, async, base, bytestring, Cabal, containers
+, directory, filepath, foldl, ghc, ghc-paths, safe-exceptions
+, stdenv, temporary, text, turtle, unix, unliftio
+, unordered-containers
 }:
 mkDerivation {
   pname = "ghc-nix";
@@ -10,8 +11,9 @@ mkDerivation {
   isExecutable = true;
   enableSeparateDataOutput = true;
   executableHaskellDepends = [
-    aeson async base containers directory filepath foldl ghc ghc-paths
-    safe-exceptions text turtle unordered-containers unix
+    aeson async base bytestring Cabal containers directory filepath
+    foldl ghc ghc-paths safe-exceptions temporary text turtle unix
+    unliftio unordered-containers
   ];
   description = "Build Haskell projects using Nix as a build cache";
   license = "unknown";

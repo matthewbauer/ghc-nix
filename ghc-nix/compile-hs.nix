@@ -28,6 +28,10 @@ let
 
     inherit PATH;
 
+    mkdir = toNixStore args.coreutils + "/mkdir";
+    cp = toNixStore args.coreutils + "/cp";
+    jq = toNixStore args.jq + "/jq";
+    sed = toNixStore args.sed + "/sed";
     ghcPkgPath = toNixStore args.ghcPkgPath;
 
     pkgConfFiles = map (x: {
@@ -44,38 +48,54 @@ let
 
     args = [ "-e" (builtins.toFile "builder.sh"
     ''
+    set -o errexit
+    # See https://github.com/NixOS/nix/issues/6736
+    if [ ! -f "$NIX_ATTRS_SH_FILE" ]; then
+      export NIX_ATTRS_SH_FILE="/build/.attrs.sh"
+    fi
+    if [ ! -f "$NIX_ATTRS_JSON_FILE" ]; then
+      export NIX_ATTRS_JSON_FILE="/build/.attrs.json"
+    fi
     source "$NIX_ATTRS_SH_FILE"
 
-    mkdir -p "''${outputs[out]}"
+    $mkdir -p "''${outputs[out]}"
 
     while read -r pkgConfPath && read -r pkgConfFile && read -r importDirOriginalPath && read -r importDirPath; do
       if ! [ -f "''${outputs[out]}/$pkgConfFile" ]; then
-        cp "$pkgConfPath" "''${outputs[out]}/$pkgConfFile"
+        $cp "$pkgConfPath" "''${outputs[out]}/$pkgConfFile"
       fi
-      sed -i -e "s,$importDirOriginalPath,$importDirPath," "''${outputs[out]}/$pkgConfFile"
-    done < <(jq -r '.pkgConfFiles | .[] | .pkgConfPath, .pkgConfFile, .importDirOriginalPath, .importDirPath' "$NIX_ATTRS_JSON_FILE")
+      $sed -i -e "s,$importDirOriginalPath,$importDirPath," "''${outputs[out]}/$pkgConfFile"
+    done < <($jq -r '.pkgConfFiles | .[] | .pkgConfPath, .pkgConfFile, .importDirOriginalPath, .importDirPath' "$NIX_ATTRS_JSON_FILE")
 
-    "$ghcPkgPath" recache -f "''${outputs[out]}" --no-user-package-db
+    "$ghcPkgPath" recache -f "''${outputs[out]}"
     '') ];
   };
 
   builder = builtins.toFile "builder.sh"
   ''
+  # See https://github.com/NixOS/nix/issues/6736
+  # See https://github.com/NixOS/nix/issues/6736
+  if [ ! -f "$NIX_ATTRS_SH_FILE" ]; then
+    export NIX_ATTRS_SH_FILE="/build/.attrs.sh"
+  fi
+  if [ ! -f "$NIX_ATTRS_JSON_FILE" ]; then
+    export NIX_ATTRS_JSON_FILE="/build/.attrs.json"
+  fi
   source "$NIX_ATTRS_SH_FILE"
 
   while read -r source && read -r target; do
-    mkdir -p "$(dirname "$target")"
+    $mkdir -p "$(dirname "$target")"
     if [ -d "$source" ]; then
-      cp -Rsf "$source" "$target"
+      $cp -Rsf "$source" "$target"
       chmod -R u+w "$target"
     else
       ln -sf "$source" "$target"
     fi
-  done < <(jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE")
+  done < <($jq -r '.dataFiles | .[] | .source, .target' "$NIX_ATTRS_JSON_FILE")
 
   hsRelDir="$(dirname "$moduleBasePath")"
-  mkdir -p "$hsRelDir"
-  cp "$hsNixPath" "$moduleBasePath.hs"
+  $mkdir -p "$hsRelDir"
+  $cp "$hsNixPath" "$moduleBasePath.hs"
 
   chmod -R u+w .
 
@@ -85,13 +105,13 @@ let
   "$ghcPath" "$moduleBasePath.hs" "''${ghcOptions[@]}"
 
   shopt -s nullglob
-  mkdir -p "''${outputs[out]}/$hsRelDir"
+  $mkdir -p "''${outputs[out]}/$hsRelDir"
   mv $hsRelDir/*.o $hsRelDir/*.hi $hsRelDir/*.hie $hsRelDir/*.dyn_o $hsRelDir/*.dyn_hi $hsRelDir/*.p_o "''${outputs[out]}/$hsRelDir"
   ln -sf  "$hsNixPath" "''${outputs[out]}/$moduleBasePath.hs"
   if [ -f exe ]; then
     mv exe "''${outputs[out]}"
   fi
-  mkdir -p "''${outputs[out]}"/nix-support
+  $mkdir -p "''${outputs[out]}"/nix-support
   echo -n $moduleBasePath.hs > "''${outputs[out]}"/nix-support/module-path
   '';
 
@@ -103,6 +123,10 @@ let
     preferLocalBuild = true;
     inherit (args) system;
     ghcPath = toNixStore args.ghcPath;
+    jq = toNixStore args.jq + "/jq";
+    sed = toNixStore args.sed + "/sed";
+    mkdir = toNixStore args.coreutils + "/mkdir";
+    cp = toNixStore args.coreutils + "/cp";
     dataFiles = map (dataFile: {
       source =
         let source' = /. + "${args.workingDirectory}/${dataFile}";

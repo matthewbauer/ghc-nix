@@ -34,7 +34,12 @@
         rec {
           packages.default = pkgs.haskell.packages."${compiler}".ghc-nix;
 
-          devShells.default = packages.default.env;
+          packages.self-test = lib.callPackage ./ghc-nix {};
+          packages.other-test = lib.withGhcNix pkgs.haskell.packages."${compiler}".fused-effects;
+
+          devShells.default = packages.default.env.overrideAttrs(oldAttrs : {
+            buildInputs = [pkgs.cabal-install ] ++ oldAttrs.buildInputs;
+          });
 
           apps.default = {
             type = "app";
@@ -47,6 +52,35 @@
           defaultApp = apps.default;
 
           devShell = devShells.default;
-        }
-    );
+
+          lib = rec {
+            callPackage = pkg : args : withGhcNix (pkgs.haskell.packages."${compiler}".callPackage pkg args);
+            withGhcNix =
+              let mk-packagedb =
+                packages:
+                pkgs.runCommand "make-package-db" {}
+                  ''
+                  mkdir $out
+                  ${ pkgs.lib.concatMapStringsSep
+                    "\n"
+                    ( pkg: "if [ -d ${pkg}/lib/ghc-8.6.5 ]; then cp -f ${pkg}/lib/ghc-8.6.5/package.conf.d/*.conf $out/; fi" )
+                    packages }
+                  ${pkgs.ghc}/bin/ghc-pkg --package-db="$out" recache
+                  '';
+
+              in pkg : ( pkgs.haskell.lib.overrideCabal pkg
+                  ( args:
+                    { configureFlags = [ "-v -w ${packages.default}/bin/ghc-nix" ];
+                      # TODO: cctools on darwins
+                      buildTools = [ pkgs.bash pkgs.which pkgs.nix pkgs.coreutils pkgs.jq pkgs.gnused pkgs.rsync ] ;
+                      buildFlags = [ "-v" ];
+                    }
+                  ) ).overrideAttrs ( oldAttrs: {
+                    requiredSystemFeatures = [ "recursive-nix" ];
+                    NIX_PATH = pkgs.path;
+                    # GHC_NIX_PACKAGE_DB = mk-packagedb ( builtins.filter ( x: x != null ) ( pkgs.lib.closePropagation ( pkg.buildInputs ++ pkg.propagatedBuildInputs ) ) );
+                  });
+            };
+     }
+   );
 }

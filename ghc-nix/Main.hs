@@ -330,6 +330,9 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
         Just ghcPkgPath <- fmap ( fmap ( fromString . Turtle.encodeString ) ) ( Turtle.which "ghc-pkg" )
         return ( ghcPath , ghcPkgPath , packageDbs ++ ghcPackagePaths )
 
+  when ( verbosity > 1 ) do
+    liftIO ( putStrLn $ "GHC_PKG_PATH=" <> T.unpack ghcPkgPath)
+    liftIO ( putStrLn $ "PACKAGE_DBS=" <> unwords packageDbs')
   mNixSubstituters <- Turtle.need "NIX_GHC_SUBSTITUTERS"
 
   let system = arch <> "-" <> os
@@ -393,6 +396,9 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
                      , "dataFilesIgnore" .= dataFilesIgnore
                      , "workingDirectory" .= workingDirectory
                      , "bash" .= Turtle.encodeString bash
+                     , "jq" .= Turtle.encodeString jq
+                     , "sed" .= Turtle.encodeString gnused
+                     , "coreutils" .= Turtle.encodeString coreutils
                      , "system" .= system
                      , "exeModuleName" .= exeModuleName ]
 

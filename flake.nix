@@ -56,19 +56,7 @@
           lib = rec {
             callPackage = pkg : args : withGhcNix (pkgs.haskell.packages."${compiler}".callPackage pkg args);
             withGhcNix =
-              let mk-packagedb =
-                packages:
-                pkgs.runCommand "make-package-db" {}
-                  ''
-                  mkdir $out
-                  ${ pkgs.lib.concatMapStringsSep
-                    "\n"
-                    ( pkg: "if [ -d ${pkg}/lib/ghc-8.6.5 ]; then cp -f ${pkg}/lib/ghc-8.6.5/package.conf.d/*.conf $out/; fi" )
-                    packages }
-                  ${pkgs.ghc}/bin/ghc-pkg --package-db="$out" recache
-                  '';
-
-              in pkg : ( pkgs.haskell.lib.overrideCabal pkg
+              pkg : ( pkgs.haskell.lib.overrideCabal pkg
                   ( args:
                     { configureFlags = [ "-v -w ${packages.default}/bin/ghc-nix" ];
                       # TODO: cctools on darwins
@@ -78,7 +66,6 @@
                   ) ).overrideAttrs ( oldAttrs: {
                     requiredSystemFeatures = [ "recursive-nix" ];
                     NIX_PATH = pkgs.path;
-                    # GHC_NIX_PACKAGE_DB = mk-packagedb ( builtins.filter ( x: x != null ) ( pkgs.lib.closePropagation ( pkg.buildInputs ++ pkg.propagatedBuildInputs ) ) );
                   });
             };
      }

@@ -255,7 +255,7 @@ compileHaskell files verbosity = do
     rsyncFiles [ ".o", ".dyn_o", ".p_o" ] outputs dir
 
   for_ hiDir \dir ->
-    rsyncFiles [ ".hi", ".dyn_hi" ] outputs dir
+    rsyncFiles [ ".hi", ".dyn_hi", ".p_hi" ] outputs dir
 
   for_ hieDir \dir ->
     rsyncFiles [ ".hie" ] outputs dir

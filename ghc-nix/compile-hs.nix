@@ -49,6 +49,7 @@ let
     args = [ "-e" (builtins.toFile "builder.sh"
     ''
     set -o errexit
+    set -o xtrace
     # See https://github.com/NixOS/nix/issues/6736
     if [ ! -f "$NIX_ATTRS_SH_FILE" ]; then
       export NIX_ATTRS_SH_FILE="/build/.attrs.sh"
@@ -73,7 +74,8 @@ let
 
   builder = builtins.toFile "builder.sh"
   ''
-  # See https://github.com/NixOS/nix/issues/6736
+  set -o errexit
+  set -o xtrace
   # See https://github.com/NixOS/nix/issues/6736
   if [ ! -f "$NIX_ATTRS_SH_FILE" ]; then
     export NIX_ATTRS_SH_FILE="/build/.attrs.sh"
@@ -102,11 +104,11 @@ let
   # a trick for file-embed
   touch .cabal
 
-  "$ghcPath" "$moduleBasePath.hs" "''${ghcOptions[@]}"
+  "$ghcPath" "$moduleBasePath.hs" -v "''${ghcOptions[@]}"
 
   shopt -s nullglob
   $mkdir -p "''${outputs[out]}/$hsRelDir"
-  mv $hsRelDir/*.o $hsRelDir/*.hi $hsRelDir/*.hie $hsRelDir/*.dyn_o $hsRelDir/*.dyn_hi $hsRelDir/*.p_o "''${outputs[out]}/$hsRelDir"
+  mv $hsRelDir/*.o $hsRelDir/*.hi $hsRelDir/*.hie $hsRelDir/*.dyn_o $hsRelDir/*.dyn_hi $hsRelDir/*.p_o $hsRelDir/*.p_hi "''${outputs[out]}/$hsRelDir"
   ln -sf  "$hsNixPath" "''${outputs[out]}/$moduleBasePath.hs"
   if [ -f exe ]; then
     mv exe "''${outputs[out]}"

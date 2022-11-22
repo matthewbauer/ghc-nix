@@ -42,6 +42,7 @@ import qualified Distribution.Types.UnitId as Cabal
 import System.Directory ( listDirectory )
 import System.FilePath ( takeDirectory )
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Lazy.Char8 as BSLC
 import System.Posix.Files (fileExist)
 import GHC.Conc (getNumProcessors)
 
@@ -297,7 +298,7 @@ interpretCommandLine = do
   _ <-
     GHC.setSessionDynFlags dynFlags
 
-  return ( map GHC.unLoc files, GHC.verbosity dynFlags )
+  return ( map GHC.unLoc files, 5)
 
 
 nixBuildHaskell
@@ -332,6 +333,7 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
 
   when ( verbosity > 1 ) do
     liftIO ( putStrLn $ "GHC_PKG_PATH=" <> T.unpack ghcPkgPath)
+    liftIO ( putStrLn $ "ARG_PACKAGE_DBS=" <> unwords packageDbs')
     liftIO ( putStrLn $ "PACKAGE_DBS=" <> unwords packageDbs')
   mNixSubstituters <- Turtle.need "NIX_GHC_SUBSTITUTERS"
 
@@ -409,6 +411,8 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
     when (verbosity > 1) do
       putStrLn "Writing json..."
     JSON.encodeFile ( Turtle.encodeString jsonFile ) jsonArgs
+    when (verbosity > 2) do
+      putStrLn $ "Json is:" <> BSLC.unpack (JSON.encode jsonArgs)
     when (verbosity > 1) do
       putStrLn "Running nix build..."
     Just ( Turtle.lineToText -> json ) <-
@@ -423,6 +427,7 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
               , "--no-link"
               , "--json"
               , "-L"
+              , "--show-trace"
               , "--option", "max-jobs", fromString ( show ( max (numProcs - 1) 1 ) )
               , "--option", "cores", "1"
               , "--option", "max-silent-time", "60"

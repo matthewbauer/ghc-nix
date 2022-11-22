@@ -35,7 +35,9 @@ let
     ghcPkgPath = toNixStore args.ghcPkgPath;
 
     pkgConfFiles = map (x: {
-      pkgConfPath = /. + "${x.pkgConfDir}/${x.pkgConfFile}";
+      pkgConfPath =
+         let p = "${x.pkgConfDir}/${x.pkgConfFile}";
+         in if isAbsolute p then /. + p else /. + "${args.workingDirectory}/${p}";
       pkgConfFile = x.pkgConfFile;
       importDirOriginalPath = x.importDir;
       importDirPath =

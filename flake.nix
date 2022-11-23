@@ -57,15 +57,26 @@
           lib = rec {
             callPackage = pkg : args : withGhcNix (pkgs.haskell.packages."${compiler}".callPackage pkg args);
             withGhcNix =
-              pkg : ( pkgs.haskell.lib.overrideCabal pkg
-                  ( args:
+            let inherit (pkgs.lib) or makeSearchPath ;
+            in pkg : ( pkgs.haskell.lib.overrideCabal pkg
+                  ( drv:
                     { configureFlags = [ "-v -w ${packages.default}/bin/ghc-nix" ];
                       # TODO: cctools on darwins
-                      buildTools = [ pkgs.bash pkgs.which pkgs.nix pkgs.coreutils pkgs.jq pkgs.gnused pkgs.rsync ] ;
+                      buildTools = (drv.buildTools or []) ++ [ pkgs.bash pkgs.which pkgs.nix pkgs.coreutils pkgs.jq pkgs.gnused pkgs.rsync ] ;
                       buildFlags = [ "-v" ];
+                      preConfigure =
+                        # We add all the executables (markdown-unlit,
+                        # hspec-discover, etc) we find in the relevant sections
+                        # of the package to the PATH.
+                      let buildTools = (drv.libraryToolDepends or []) ++ (drv.testToolDepends or []);
+                          buildToolsPath = makeSearchPath "bin" buildTools;
+
+                      in ''
+                         export NIX_GHC_PATH="${buildToolsPath}:$NIX_GHC_PATH"
+                      '';
                     }
                   ) ).overrideAttrs ( oldAttrs: {
-                    requiredSystemFeatures = [ "recursive-nix" ];
+                    requiredSystemFeatures = (oldAttrs.requiredSystemFeatures or []) ++ [ "recursive-nix" ];
                     NIX_PATH = pkgs.path;
                   });
             };

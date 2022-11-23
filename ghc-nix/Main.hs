@@ -411,6 +411,8 @@ nixBuildHaskell ghcOptions dependencyGraph verbosity packageDbs exeModuleName ho
     when (verbosity > 1) do
       putStrLn "Writing json..."
     JSON.encodeFile ( Turtle.encodeString jsonFile ) jsonArgs
+    -- when (verbosity > 2) do
+    --   putStrLn $ "Json is:" <> BSLC.unpack (JSON.encode jsonArgs)
     when (verbosity > 1) do
       putStrLn "Running nix build..."
     Just ( Turtle.lineToText -> json ) <-

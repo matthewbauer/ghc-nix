@@ -63,7 +63,7 @@
                     { configureFlags = [ "-v -w ${packages.default}/bin/ghc-nix" ];
                       # TODO: cctools on darwins
                       buildTools = (drv.buildTools or []) ++ [ pkgs.bash pkgs.which pkgs.nix pkgs.coreutils pkgs.jq pkgs.gnused pkgs.rsync ] ;
-                      buildFlags = [ "-v" ];
+                      buildFlags = (drv.buildFlags or []) ++ [ "-v" ];
                       preConfigure =
                         # We add all the executables (markdown-unlit,
                         # hspec-discover, etc) we find in the relevant sections

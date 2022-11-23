@@ -43,9 +43,10 @@ let
       importDirPath =
         if hasPrefix builtins.storeDir x.importDir then builtins.storePath x.importDir
         else
-          builtins.filterSource (path: type:
-            type == "directory" || builtins.match "^.*\\.(dyn_hi|hi|dylib|so|dll)$" (baseNameOf path) != null
-          ) (/. + x.importDir);
+          # builtins.filterSource (path: type:
+          #   type == "directory" || builtins.match "^.*\\.(dyn_hi|p_hi|hi|dylib|so|dll)$" (baseNameOf path) != null
+          # ) (/. + x.importDir);
+          builtins.path { path = (/. + x.importDir); };
     }) args.pkgConfFiles;
 
     args = [ "-e" (builtins.toFile "builder.sh"

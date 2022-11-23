@@ -36,6 +36,7 @@
 
           packages.self-test = lib.callPackage ./ghc-nix {};
           packages.other-test = lib.withGhcNix pkgs.haskell.packages."${compiler}".fused-effects;
+          packages.other-test2 = lib.withGhcNix pkgs.haskell.packages."${compiler}".generics-eot;
 
           devShells.default = packages.default.env.overrideAttrs(oldAttrs : {
             buildInputs = [pkgs.cabal-install ] ++ oldAttrs.buildInputs;

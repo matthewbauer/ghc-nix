@@ -11,56 +11,13 @@
 
         config = { };
 
-        overlay = self: super: {
-          haskell = super.haskell // {
-            packages = super.haskell.packages // {
-              "${compiler}" = super.haskell.packages."${compiler}".override (old: {
-                overrides =
-                  self.lib.composeExtensions
-                    (old.overrides or (_: _: { }))
-                    (self.haskell.lib.packageSourceOverrides {
-                      ghc-nix = ./ghc-nix;
-                    });
-              });
-            };
-          };
-        };
 
-        overlays = [ overlay ];
-
-        pkgs = import nixpkgs { inherit config system overlays; };
-
-      in
-        rec {
-          packages.default = pkgs.haskell.packages."${compiler}".ghc-nix;
-
-          packages.self-test = lib.callPackage ./ghc-nix {};
-          packages.other-test = lib.withGhcNix pkgs.haskell.packages."${compiler}".fused-effects;
-          packages.other-test2 = lib.withGhcNix pkgs.haskell.packages."${compiler}".generics-eot;
-
-          devShells.default = packages.default.env.overrideAttrs(oldAttrs : {
-            buildInputs = [pkgs.cabal-install ] ++ oldAttrs.buildInputs;
-          });
-
-          apps.default = {
-            type = "app";
-
-            program = "${packages.default}/bin/ghc-nix";
-          };
-
-          defaultPackage = packages.default;
-
-          defaultApp = apps.default;
-
-          devShell = devShells.default;
-
-          lib = rec {
-            callPackage = pkg : args : withGhcNix (pkgs.haskell.packages."${compiler}".callPackage pkg args);
-            withGhcNix =
-            let inherit (pkgs.lib) or makeSearchPath ;
+        withGhcNix' = pkgs: compiler :
+            let inherit (pkgs.lib) or makeSearchPath;
+                ghc-nix = pkgs.haskell.packages."${compiler}".callCabal2nix "ghc-nix" ./ghc-nix {};
             in pkg : ( pkgs.haskell.lib.overrideCabal pkg
                   ( drv:
-                    { configureFlags = [ "-v -w ${packages.default}/bin/ghc-nix" ];
+                    { configureFlags = [ "-v -w ${ghc-nix}/bin/ghc-nix" ];
                       # TODO: cctools on darwins
                       buildTools = (drv.buildTools or []) ++ [ pkgs.bash pkgs.which pkgs.nix pkgs.coreutils pkgs.jq pkgs.gnused pkgs.rsync ] ;
                       buildFlags = (drv.buildFlags or []) ++ [ "-v" ];
@@ -78,8 +35,63 @@
                   ) ).overrideAttrs ( oldAttrs: {
                     requiredSystemFeatures = (oldAttrs.requiredSystemFeatures or []) ++ [ "recursive-nix" ];
                     NIX_PATH = pkgs.path;
-                  });
-            };
+        });
+        # We add a ghc-nix to each available ghc
+        overlay = self: super: {
+          haskell = super.haskell // {
+            packages = super.haskell.packages // self.lib.mapAttrs'
+            (compiler: compilerAttr:
+              self.lib.nameValuePair
+              "${compiler}" (super.haskell.packages."${compiler}".override (old: {
+                overrides =
+                  self.lib.composeManyExtensions
+                    [(old.overrides or (_: _: { }))
+                    (self': super': rec {
+                      withGhcNix = withGhcNix' super compiler;
+                      callPackageIncrementally = drv: args: withGhcNix (super'.callPackage drv args);
+                    })
+                    (self.haskell.lib.packageSourceOverrides {
+                      ghc-nix = ./ghc-nix;
+                    })
+                    ];
+              })
+              ))
+            super.haskell.packages
+            ;
+          };
+        };
+
+        overlays = [ overlay ];
+
+        pkgs = import nixpkgs { inherit config system overlays; };
+
+      in
+        rec {
+          overlays.default = overlay;
+          packages.default = pkgs.haskell.packages."${compiler}".ghc-nix;
+
+          packages.self-test = pkgs.haskell.packages."${compiler}".callPackageIncrementally ./ghc-nix {};
+          # This currently fails to compile ghc-nix
+          # packages.self-test-902 = pkgs.haskell.packages.ghc902.callPackageIncrementally ./ghc-nix {};
+          packages.self-test-924 = pkgs.haskell.packages.ghc924.callPackageIncrementally ./ghc-nix {};
+          packages.other-test = pkgs.haskell.packages."${compiler}".withGhcNix pkgs.haskell.packages."${compiler}".fused-effects;
+          # packages.other-test2 = lib.withGhcNix pkgs.haskell.packages."${compiler}".generics-eot;
+
+          devShells.default = packages.default.env.overrideAttrs(oldAttrs : {
+            buildInputs = [pkgs.cabal-install ] ++ oldAttrs.buildInputs;
+          });
+
+          apps.default = {
+            type = "app";
+            program = "${packages.default}/bin/ghc-nix";
+          };
+
+          defaultPackage = packages.default;
+
+          defaultApp = apps.default;
+
+          devShell = devShells.default;
+
      }
    );
 }
